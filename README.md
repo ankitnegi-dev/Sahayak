@@ -84,7 +84,6 @@ parentbot/
 ├── migrations/       # goose SQL migrations (Phase 4)
 ├── docs/
 │   ├── decisions.md  # architecture decision log
-│   ├── notes/        # Go learning notes, written as each phase builds
 │   └── roadmap-source.txt
 ├── dashboard/        # Next.js app (Phase 7)
 └── docker-compose.yml
@@ -194,14 +193,6 @@ Coverage should be high on safety, conversation and order code. Do not chase
 100% everywhere.
 
 ---
-
-## Learning notes
-
-Written for someone who knows Python and is learning Go through this project.
-Each note explains the concept, the Python difference, where it appears in this
-codebase, and the gotchas.
-
-Start with [docs/notes/00-index.md](docs/notes/00-index.md).
 
 ---
 

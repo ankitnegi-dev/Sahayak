@@ -30,3 +30,8 @@ dashboard/.env*.local
 tmp/
 *.sql.gz
 pgdata/
+
+# Personal learning notes. These are study material for the developer
+# learning Go through this project, not part of the product. Kept on disk,
+# deliberately not committed.
+docs/notes/
