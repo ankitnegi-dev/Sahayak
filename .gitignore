@@ -1,0 +1,32 @@
+# Secrets and local environment
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Build artifacts
+bin/
+dist/
+coverage.out
+coverage.html
+*.exe
+*.test
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Node (dashboard app, Phase 7)
+node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/.env*.local
+
+# Local databases and scratch
+tmp/
+*.sql.gz
+pgdata/

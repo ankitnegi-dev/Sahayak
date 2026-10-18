@@ -1,0 +1,18 @@
+# Normalise line endings in the repository. Working copies on Windows get CRLF,
+# but the stored blobs stay LF so diffs are clean across platforms.
+
+* text=auto eol=lf
+
+*.go   text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sql  text eol=lf
+Makefile text eol=lf
+
+*.png  binary
+*.jpg  binary
+*.pdf  binary
+*.ogg  binary
+*.opus binary
+*.mp3  binary

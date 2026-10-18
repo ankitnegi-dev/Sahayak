@@ -1,0 +1,42 @@
+name: parentbot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: parentbot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: parentbot
+      POSTGRES_PASSWORD: parentbot
+      POSTGRES_DB: parentbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # The API and integration tests must not start before Postgres accepts
+      # connections, otherwise the first migration races the boot.
+      test: ["CMD-SHELL", "pg_isready -U parentbot -d parentbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: parentbot-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:
