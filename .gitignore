@@ -35,3 +35,8 @@ pgdata/
 # learning Go through this project, not part of the product. Kept on disk,
 # deliberately not committed.
 docs/notes/
+
+# Planning documents. The roadmap is kept locally as a reference; the README
+# summarises the plan for anyone browsing the repository.
+docs/roadmap-source.txt
+*.pdf

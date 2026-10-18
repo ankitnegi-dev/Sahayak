@@ -36,7 +36,7 @@ fmtcheck: ## Fail if any file is unformatted (used in CI)
 
 .PHONY: test
 test: ## Run unit tests with race detector and coverage
-	go test -race -coverprofile=coverage.out ./...
+	go test -race "-coverprofile=coverage.out" "-covermode=atomic" ./...
 
 .PHONY: cover
 cover: test ## Open the coverage report in a browser
