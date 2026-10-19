@@ -18,6 +18,10 @@ type Deps struct {
 	Log *slog.Logger
 	// Health checks dependency readiness. A nil func reports healthy.
 	Health func() error
+	// Webhook configures the Meta webhook routes. When Deduper and Publisher
+	// are both nil the routes are not mounted, which keeps Phase 1 style
+	// deployments and health-only tests simple.
+	Webhook *WebhookDeps
 }
 
 // NewRouter builds the application router.
@@ -32,6 +36,17 @@ func NewRouter(deps Deps) http.Handler {
 
 	r.Get("/healthz", healthHandler(deps.Health))
 	r.Get("/readyz", healthHandler(deps.Health))
+
+	// The webhook is mounted only when it is fully wired. A half-configured
+	// webhook that returns 503 on every delivery would make Meta retry
+	// forever, so it is better not to expose the route at all.
+	if deps.Webhook != nil && deps.Webhook.Deduper != nil && deps.Webhook.Publisher != nil {
+		hookDeps := *deps.Webhook
+		if hookDeps.Log == nil {
+			hookDeps.Log = deps.Log
+		}
+		mountWebhook(r, hookDeps)
+	}
 
 	return r
 }

@@ -144,6 +144,120 @@ such as gin or echo would buy little for this traffic profile.
 
 ---
 
+## ADR-010: Interfaces are declared where they are used, not where implemented
+
+**Status:** Accepted
+
+**Context:** Phase 2 needs the webhook handler to deduplicate messages and
+publish jobs, without knowing whether those live in memory or Postgres.
+
+**Decision:** Each dependency is an interface declared in the package that
+consumes it. `whatsapp.Deduper` is declared in the `whatsapp` package but
+consumed by `httpapi`. `jobs.Publisher` is declared in `jobs` and consumed by
+`httpapi`. Neither package imports a concrete implementation.
+
+**Consequences:** The dependency arrow points one way and import cycles are
+structurally impossible. A test supplies a fake without any mocking library.
+Phase 4 swaps in a Postgres deduper by changing one line in `cmd/api`, and the
+handler does not change at all.
+
+---
+
+## ADR-011: Deduplicate before enqueue, and ack duplicates with 200
+
+**Status:** Accepted
+
+**Context:** Meta retries a webhook delivery whenever it does not get a fast
+2xx. A retry processed as new work is a duplicate cab booking, which is the
+worst bug this product could have.
+
+**Decision:** Three rules, in this order:
+
+1. Mark the message ID seen BEFORE enqueueing. Reversed, a retry could enqueue
+   a second job even though the ID was recorded.
+2. Return 200 for a verified duplicate. Returning an error would make Meta
+   retry it forever.
+3. Return 500 when the dedup store itself fails. A 200 would lose the message
+   permanently, so the safe outcome is to make Meta retry.
+
+**Consequences:** A retried delivery costs one INSERT and nothing else. When
+the queue is down and we return 500, Meta retries, and the retry is caught by
+dedup, so the message is enqueued exactly once. The two mechanisms are designed
+to interact correctly under failure.
+
+---
+
+## ADR-012: Verify the signature over raw bytes, before decoding
+
+**Status:** Accepted
+
+**Context:** Meta signs the exact request body with HMAC-SHA256 and sends the
+digest in `X-Hub-Signature-256`.
+
+**Decision:** Read the body with `io.ReadAll`, verify against those exact bytes,
+and only then decode JSON. Never decode and re-encode, because key order and
+whitespace change and the digest will not match.
+
+**Consequences:** A tampered body is rejected with 403 before any business logic
+runs. Returning 403 rather than 500 is deliberate: 500 would make Meta retry
+something that can never succeed, forever.
+
+---
+
+## ADR-013: Defer Postgres dedup to Phase 4 behind an interface
+
+**Status:** Accepted
+
+**Context:** Phase 2 is the webhook and Phase 4 is the data layer, but dedup
+needs storage from day one.
+
+**Decision:** Ship `MemoryDeduper` now, with the `Deduper` interface already in
+place, and replace it with a Postgres implementation backed by a unique
+constraint in Phase 4.
+
+**Consequences:** Phase 2 is fully testable with no database, and the dedup
+behaviour is proven by tests now rather than discovered in production later.
+The in-memory version is explicitly documented as development-only, because it
+loses state on restart and does not dedup across replicas. Either failure mode
+would produce duplicate bookings, so the log line says so loudly.
+
+---
+
+## ADR-014: No audio bytes in the queue payload
+
+**Status:** Accepted
+
+**Context:** Parents send voice notes. It would be simplest to put the audio in
+the job so the worker does not have to fetch it.
+
+**Decision:** The queue payload carries only the Meta media ID. The worker
+resolves that into a temporary URL and downloads the audio itself.
+
+**Consequences:** Audio never sits in Redis, which upholds the promise that it
+is deleted immediately after transcription. The cost is one extra API call per
+voice note, and the worker must hold the access token. The media URL is short
+lived, so storing it would have been wrong anyway.
+
+---
+
+## ADR-015: A test handler must never block on r.Context().Done()
+
+**Status:** Accepted
+
+**Context:** A cancellation test hung for the full suite timeout and had to be
+diagnosed from a goroutine dump.
+
+**Decision:** The fake Graph API server blocks on an explicit `release`
+channel that the test closes, never on the request context.
+
+**Consequences:** Go's HTTP/1.1 server only cancels the request context when
+the connection actually closes, so a handler waiting on it deadlocks
+`httptest.Server.Close()`. This pattern is a trap worth remembering for every
+future contract test, not just this one.
+
+
+---
+
 ## ADR-009: `internal/` package layout
 
 **Status:** Accepted

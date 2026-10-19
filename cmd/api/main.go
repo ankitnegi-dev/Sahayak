@@ -15,7 +15,9 @@ import (
 
 	"github.com/ankitnegi-dev/Sahayak/internal/config"
 	"github.com/ankitnegi-dev/Sahayak/internal/httpapi"
+	"github.com/ankitnegi-dev/Sahayak/internal/jobs"
 	"github.com/ankitnegi-dev/Sahayak/internal/logger"
+	"github.com/ankitnegi-dev/Sahayak/internal/whatsapp"
 )
 
 func main() {
@@ -43,11 +45,35 @@ func run() error {
 		"version", version,
 	)
 
+	// The webhook is mounted only when credentials are present. In local
+	// development without Meta credentials the process still starts, so the
+	// health endpoints and the test suite work, but the webhook route is
+	// absent rather than returning 503 on every delivery.
+	var webhookDeps *httpapi.WebhookDeps
+	if cfg.Secrets.WhatsAppAppSecret != "" && cfg.Secrets.WhatsAppVerifyToken != "" {
+		webhookDeps = &httpapi.WebhookDeps{
+			Log:         log,
+			VerifyToken: cfg.Secrets.WhatsAppVerifyToken,
+			AppSecret:   cfg.Secrets.WhatsAppAppSecret,
+			// Phase 4 swaps this for a Postgres-backed deduper with a unique
+			// constraint. Until then, dedup is per-process and resets on
+			// restart, which is acceptable only for development.
+			Deduper:   whatsapp.NewMemoryDeduper(),
+			Publisher: &jobs.LoggingPublisher{Log: log},
+		}
+		log.Info("webhook mounted", "dedupe", "in-memory (development only)")
+	} else {
+		log.Warn("webhook not mounted: WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN are required")
+	}
+
 	// Signal-aware context: a deploy or a local Ctrl-C triggers shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	router := httpapi.NewRouter(httpapi.Deps{Log: log})
+	router := httpapi.NewRouter(httpapi.Deps{
+		Log:     log,
+		Webhook: webhookDeps,
+	})
 
 	srv := &http.Server{
 		Addr:         cfg.HTTP.Addr,

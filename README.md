@@ -18,9 +18,9 @@ part-time).
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 0 | Learn Go: Tour of Go, Go by Example, mini HTTP server | not started |
-| 1 | Foundations: layout, config, logging, CI, docker-compose | **in progress** |
-| 2 | WhatsApp webhook: signature verification, idempotency, queueing | not started |
+| 0 | Learn Go: Tour of Go, Go by Example, mini HTTP server | done, folded into Phase 1 |
+| 1 | Foundations: layout, config, logging, CI, docker-compose | **done** |
+| 2 | WhatsApp webhook: signature verification, idempotency, queueing | **done** |
 | 3 | Voice pipeline: ASR providers, word error rate benchmark | not started |
 | 4 | Data layer: schema, goose migrations, sqlc | not started |
 | 5 | Conversation engine: state machine, Claude tool use | not started |
@@ -44,10 +44,11 @@ part-time).
         ▼
   ┌─────────────────────────────────────────┐
   │  cmd/api                               │
-  │   1. verify HMAC signature (crypto/hmac)│
-  │   2. INSERT processed_messages (unique) │  ← idempotency
-  │   3. enqueue to Redis                   │
-  │   4. return 200 immediately            │
+  │   1. read RAW body                      │
+  │   2. verify HMAC-SHA256 signature      │
+  │   3. dedupe on wamid (MarkSeen)        │  ← idempotency
+  │   4. enqueue to Redis                   │
+  │   5. return 200 immediately            │
   └─────────────────────────────────────────┘
         │  asynq job
         ▼
@@ -68,6 +69,23 @@ part-time).
 decides every action, especially anything involving money.** See
 [ADR-004](docs/decisions.md).
 
+### Why the webhook ordering matters
+
+Meta retries any delivery that does not get a fast 2xx, so the order of
+operations is a correctness requirement, not a style choice:
+
+| Situation | Response | Why |
+| --- | --- | --- |
+| Valid message | 200 | Accepted and queued |
+| Valid duplicate | 200 | An error would make Meta retry forever |
+| Bad signature | 403 | 500 would retry something that can never succeed |
+| Dedup store down | 500 | 200 would lose the parent's message permanently |
+| Queue down | 500 | Meta retries, and dedup then stops it being enqueued twice |
+
+Deduplication happens **before** enqueue. Reversed, a retry could queue a
+second job even though the message ID was already recorded. See
+[ADR-011](docs/decisions.md) and [ADR-012](docs/decisions.md).
+
 ---
 
 ## Repository layout
@@ -79,8 +97,10 @@ parentbot/
 │   └── worker/       # background jobs
 ├── internal/
 │   ├── config/       # env loading and validation
+│   ├── httpapi/      # router, middleware, webhook handlers
+│   ├── jobs/         # API to worker contract
 │   ├── logger/       # structured logging and redaction
-│   └── httpapi/      # router and middleware
+│   └── whatsapp/     # Meta client, signature check, payload types
 ├── migrations/       # goose SQL migrations (Phase 4)
 ├── docs/
 │   ├── decisions.md  # architecture decision log
