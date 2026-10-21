@@ -1,0 +1,42 @@
+# ASR benchmark corpus manifest
+#
+# One JSON object per line. Lines starting with // or # are ignored.
+#
+# THIS FILE IS A TEMPLATE. The real manifest and the audio files are never
+# committed, because they contain your parents' voices.
+#
+# To build the corpus:
+#   1. Record 30 to 50 voice notes from your parents on a phone, asking them
+#      to say things the bot would need to handle. Save them as .ogg or .opus
+#      to match what WhatsApp sends.
+#   2. Rename each file to its id, for example s01.ogg.
+#   3. Copy this file to manifest.jsonl and fill in one line per recording.
+#   4. Run:  go run ./cmd/asrbench -manifest corpus/manifest.jsonl -provider sarvam
+#
+# Why hand-write the reference transcript rather than trusting a provider:
+# if you build the reference from one of the providers you are measuring, that
+# provider wins by construction. The reference must come from a human who
+# knows exactly what was said.
+#
+# What to vary, because these are the cases that break ASR:
+#   - quiet room versus a noisy kitchen or a running fan
+#   - normal speed versus slow, deliberate speech
+#   - close to the phone versus a metre away
+#   - both parents, and different accents if your family has them
+#   - short requests and long rambling ones
+#
+# Use the tags column to record conditions, because a provider that wins
+# overall can still lose badly on noisy samples, which is exactly the case
+# that matters when a parent is calling from a kitchen.
+#
+# Fields:
+#   id        unique short name, also the audio file stem
+#   path      audio file, relative to the manifest's directory
+#   reference the exact words spoken, typed by hand
+#   mime_type optional, inferred from the extension if omitted
+#   tags      optional labels such as quiet, noisy, slow, far, male, female
+
+{"id":"s01","path":"s01.ogg","reference":"mere liye cab book karo","tags":["quiet","normal-speed"]}
+{"id":"s02","path":"s02.ogg","reference":"ghar bhejo","tags":["quiet","normal-speed"]}
+{"id":"s03","path":"s03.ogg","reference":"mandir chalo","tags":["noisy","normal-speed"]}
+{"id":"s04","path":"s04.ogg","reference":"hospital le chalo jaldi","tags":["noisy","slow"]}
