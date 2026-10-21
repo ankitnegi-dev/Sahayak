@@ -40,3 +40,8 @@ docs/notes/
 # summarises the plan for anyone browsing the repository.
 docs/roadmap-source.txt
 *.pdf
+
+# ASR benchmark corpus. This contains recorded voices of family members and
+# must never be committed. Only the template manifest is tracked.
+corpus/*
+!corpus/manifest.example.jsonl

@@ -21,7 +21,7 @@ part-time).
 | 0 | Learn Go: Tour of Go, Go by Example, mini HTTP server | done, folded into Phase 1 |
 | 1 | Foundations: layout, config, logging, CI, docker-compose | **done** |
 | 2 | WhatsApp webhook: signature verification, idempotency, queueing | **done** |
-| 3 | Voice pipeline: ASR providers, word error rate benchmark | not started |
+| 3 | Voice pipeline: ASR providers, word error rate benchmark | **done, benchmark needs your recordings** |
 | 4 | Data layer: schema, goose migrations, sqlc | not started |
 | 5 | Conversation engine: state machine, Claude tool use | not started |
 | 6 | Safety layer: caps, approval rules, rate limits, kill switch | not started |
