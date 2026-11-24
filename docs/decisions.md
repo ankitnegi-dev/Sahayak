@@ -144,6 +144,22 @@ such as gin or echo would buy little for this traffic profile.
 
 ---
 
+## ADR-009: `internal/` package layout
+
+**Status:** Accepted
+
+**Context:** The project will accumulate a lot of code, and package boundaries
+that erode early are hard to restore later.
+
+**Decision:** Everything lives under `internal/`, which the Go toolchain
+enforces as private to this module.
+
+**Consequences:** Import cycles and accidental public API become compile-time
+problems rather than review-time ones. The codebase cannot be imported by
+anyone else, which is correct for an application.
+
+---
+
 ## ADR-010: Interfaces are declared where they are used, not where implemented
 
 **Status:** Accepted
@@ -333,20 +349,104 @@ rates.
 weight. Averaging would let short clips dominate the result and could easily
 pick the wrong provider. This is tested directly.
 
-
-
 ---
 
-## ADR-009: `internal/` package layout
+## ADR-020: Money stored as integer paise, never floats
 
 **Status:** Accepted
 
-**Context:** The project will accumulate a lot of code, and package boundaries
-that erode early are hard to restore later.
+**Context:** The product handles spend caps, per-ride caps and order amounts.
+Floating point cannot represent 0.10 rupees exactly, and a rounding error in
+a spend cap is a real money bug.
 
-**Decision:** Everything lives under `internal/`, which the Go toolchain
-enforces as private to this module.
+**Decision:** Every monetary column is `bigint` in paise. Every Go field is
+`int64`. There are no floats anywhere in the schema or in the code that
+touches money.
 
-**Consequences:** Import cycles and accidental public API become compile-time
-problems rather than review-time ones. The codebase cannot be imported by
-anyone else, which is correct for an application.
+**Consequences:** Arithmetic is exact. The downside is that display code must
+divide by 100, which is a formatting concern, not a correctness one.
+
+---
+
+## ADR-021: Database-level enforcement of order status transitions
+
+**Status:** Accepted
+
+**Context:** The conversation engine and safety layer both touch order status.
+A bug in either could move an order from `completed` back to `created`.
+
+**Decision:** A trigger on `orders` rejects any transition not in the legal
+set. Terminal states (`completed`, `cancelled`, `failed`) have no outbound
+edges at all.
+
+**Consequences:** Even a buggy Go binary cannot corrupt order state. The cost
+is that the legal graph is defined in SQL and must be kept in sync with the
+Go state machine constants.
+
+---
+
+## ADR-022: Audit log is append-only via trigger and role
+
+**Status:** Accepted
+
+**Context:** The audit log is the evidence trail for everything the bot does
+with money. If it can be edited, it is not an audit log.
+
+**Decision:** Two independent mechanisms. A trigger raises an exception on any
+UPDATE or DELETE. A restricted role `sahayak_app` has only INSERT and SELECT
+on `audit_log`. Both must be bypassed to tamper with a row.
+
+**Consequences:** Tampering requires superuser access, which is a different
+threat model from application compromise. The role creation needs a superuser
+to run the migration; on a restricted database the migration skips it with a
+notice.
+
+---
+
+## ADR-023: sqlc over an ORM
+
+**Status:** Accepted
+
+**Context:** The data layer needs type-safe database access. The roadmap
+suggests pgx + sqlc.
+
+**Decision:** sqlc generates Go from hand-written SQL. No ORM.
+
+**Consequences:** The SQL is explicit and reviewable, and the generated code
+is committed so the build does not depend on running sqlc. The cost is that
+schema changes require regenerating and reviewing the diff.
+
+---
+
+## ADR-024: Postgres deduper replaces the in-memory one
+
+**Status:** Accepted
+
+**Context:** Phase 2 shipped `MemoryDeduper` behind the `Deduper` interface.
+It loses state on restart and does not dedup across replicas.
+
+**Decision:** `PostgresDeduper` uses `INSERT ... ON CONFLICT DO NOTHING` on
+`processed_messages.wa_message_id`. The unique constraint is the guarantee.
+
+**Consequences:** Dedup survives restarts and works across replicas. The
+interface and the webhook handler are unchanged. The in-memory version remains
+for local development without a database.
+
+---
+
+## ADR-025: Known gap: crash between dedup claim and enqueue
+
+**Status:** Accepted, to be fixed in Phase 9
+
+**Context:** PostgresDeduper inserts the row at Claim and deletes it on Abort.
+A process crash between Claim and a successful publish leaves the row behind,
+so Meta's retry is deduped and the message is never processed.
+
+**Decision:** Accept for now, since the publisher is still a logger. In Phase 9,
+fix it with either a status column (claimed/committed) plus a claim timeout, or
+an outbox table written in the same transaction as the dedup row.
+
+**Consequences:** At-most-once delivery until Phase 9. Must be fixed before real
+parents rely on it. Refines ADR-011 and ADR-024.
+
+---

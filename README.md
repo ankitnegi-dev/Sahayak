@@ -22,7 +22,7 @@ part-time).
 | 1 | Foundations: layout, config, logging, CI, docker-compose | **done** |
 | 2 | WhatsApp webhook: signature verification, idempotency, queueing | **done** |
 | 3 | Voice pipeline: ASR providers, word error rate benchmark | **done, benchmark needs your recordings** |
-| 4 | Data layer: schema, goose migrations, sqlc | not started |
+| 4 | Data layer: schema, goose migrations, sqlc | **done** |
 | 5 | Conversation engine: state machine, Claude tool use | not started |
 | 6 | Safety layer: caps, approval rules, rate limits, kill switch | not started |
 | 7 | Child dashboard: Next.js + Go API | not started |
@@ -200,6 +200,48 @@ boot otherwise. See [ADR-007](docs/decisions.md).
 | `make psql` | Open a database shell |
 
 ---
+
+## Database
+
+Phase 4 adds a Postgres data layer. The schema lives in `migrations/` as goose
+SQL files, and queries are in `internal/store/queries/`. sqlc generates
+type-safe Go from them.
+
+### Running migrations
+
+```bash
+make migrate-up       # apply all pending migrations
+make migrate-down     # roll back the last one
+make migrate-status   # show what is applied
+make migrate-reset    # roll back everything (destructive)
+```
+
+Migrations apply in dependency order and each has an Up and a Down. The Down
+path is tested, not just the Up.
+
+### Running integration tests
+
+Integration tests hit a real Postgres, not mocks. They are tagged so unit tests
+stay fast:
+
+```bash
+make test-integration   # requires Postgres running
+make test               # unit tests only, no database needed
+```
+
+For local development, start Postgres and set `DATABASE_URL` in `.env`. In CI,
+a service container provides Postgres.
+
+### Money is in paise
+
+All monetary amounts are stored as integers in paise (1 rupee = 100 paise).
+There are no floats anywhere in the schema or in Go. See ADR-020.
+
+### Audit log is append-only
+
+The `audit_log` table has a trigger that rejects UPDATE and DELETE, and the
+`sahayak_app` role has only INSERT and SELECT on it. This is enforced at the
+database level, not only in Go. See ADR-022.
 
 ## Testing strategy
 
