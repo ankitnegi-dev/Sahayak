@@ -17,7 +17,9 @@ import (
 	"github.com/ankitnegi-dev/Sahayak/internal/httpapi"
 	"github.com/ankitnegi-dev/Sahayak/internal/jobs"
 	"github.com/ankitnegi-dev/Sahayak/internal/logger"
+	"github.com/ankitnegi-dev/Sahayak/internal/store"
 	"github.com/ankitnegi-dev/Sahayak/internal/whatsapp"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -45,30 +47,50 @@ func run() error {
 		"version", version,
 	)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// The webhook is mounted only when credentials are present. In local
 	// development without Meta credentials the process still starts, so the
 	// health endpoints and the test suite work, but the webhook route is
 	// absent rather than returning 503 on every delivery.
 	var webhookDeps *httpapi.WebhookDeps
 	if cfg.Secrets.WhatsAppAppSecret != "" && cfg.Secrets.WhatsAppVerifyToken != "" {
+		// Prefer Postgres-backed dedup when a database is configured. The
+		// unique constraint on processed_messages.wa_message_id makes the
+		// guarantee hold across restarts and across replicas, which the
+		// in-memory version cannot.
+		var deduper whatsapp.Deduper
+		if cfg.DB.URL != "" {
+			pool, err := pgxpool.New(ctx, cfg.DB.URL)
+			if err != nil {
+				log.Error("webhook: cannot connect to database", "error", err)
+				return fmt.Errorf("connect database: %w", err)
+			}
+			// Verify connectivity before serving traffic.
+			if err := pool.Ping(ctx); err != nil {
+				pool.Close()
+				log.Error("webhook: database ping failed", "error", err)
+				return fmt.Errorf("ping database: %w", err)
+			}
+			deduper = store.NewPostgresDeduper(pool)
+			log.Info("webhook dedup: postgres-backed")
+		} else {
+			deduper = whatsapp.NewMemoryDeduper()
+			log.Warn("webhook dedup: in-memory (development only, resets on restart)")
+		}
+
 		webhookDeps = &httpapi.WebhookDeps{
 			Log:         log,
 			VerifyToken: cfg.Secrets.WhatsAppVerifyToken,
 			AppSecret:   cfg.Secrets.WhatsAppAppSecret,
-			// Phase 4 swaps this for a Postgres-backed deduper with a unique
-			// constraint. Until then, dedup is per-process and resets on
-			// restart, which is acceptable only for development.
-			Deduper:   whatsapp.NewMemoryDeduper(),
-			Publisher: &jobs.LoggingPublisher{Log: log},
+			Deduper:     deduper,
+			Publisher:   &jobs.LoggingPublisher{Log: log},
 		}
-		log.Info("webhook mounted", "dedupe", "in-memory (development only)")
+		log.Info("webhook mounted")
 	} else {
 		log.Warn("webhook not mounted: WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN are required")
 	}
-
-	// Signal-aware context: a deploy or a local Ctrl-C triggers shutdown.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	router := httpapi.NewRouter(httpapi.Deps{
 		Log:     log,

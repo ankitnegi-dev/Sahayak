@@ -38,6 +38,30 @@ fmtcheck: ## Fail if any file is unformatted (used in CI)
 test: ## Run unit tests with race detector and coverage
 	go test -race "-coverprofile=coverage.out" "-covermode=atomic" ./...
 
+.PHONY: test-integration
+test-integration: ## Run integration tests against a real Postgres
+	go test -tags integration -race -timeout 300s ./internal/store/...
+
+.PHONY: migrate-up
+migrate-up: ## Apply all pending migrations
+	goose -dir migrations postgres "$(DATABASE_URL)" up
+
+.PHONY: migrate-down
+migrate-down: ## Roll back the last migration
+	goose -dir migrations postgres "$(DATABASE_URL)" down
+
+.PHONY: migrate-status
+migrate-status: ## Show migration status
+	goose -dir migrations postgres "$(DATABASE_URL)" status
+
+.PHONY: migrate-reset
+migrate-reset: ## Roll back all migrations (destructive)
+	goose -dir migrations postgres "$(DATABASE_URL)" down-to 0
+
+.PHONY: sqlc
+sqlc: ## Regenerate sqlc code from SQL queries
+	sqlc generate
+
 .PHONY: cover
 cover: test ## Open the coverage report in a browser
 	go tool cover -html=coverage.out
