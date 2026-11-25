@@ -21,6 +21,12 @@ type ConversationContext struct {
 
 	// FarePaise is the estimated fare, if known. Stored as integer paise.
 	FarePaise int64 `json:"fare_paise,omitempty"`
+
+	// RequestID is generated when a ride request reaches awaiting_confirmation.
+	// It is the basis for the idempotency key, so a retry of the same
+	// confirmation produces exactly one order. It is cleared on every terminal
+	// or reset path.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // Marshal serialises the context to JSON for storage.

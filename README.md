@@ -243,6 +243,22 @@ The `audit_log` table has a trigger that rejects UPDATE and DELETE, and the
 `sahayak_app` role has only INSERT and SELECT on it. This is enforced at the
 database level, not only in Go. See ADR-022.
 
+## Local chat tool
+
+For manual testing of the conversation engine without WhatsApp:
+
+```bash
+go run ./cmd/chat
+```
+
+This creates a test user with saved places (ghar, mandir) in Postgres, then
+lets you type messages and see replies and the current state. It uses
+FakeBooker (fake deep links) and either Claude (if `ANTHROPIC_API_KEY` is set)
+or FakeExtractor.
+
+The database name must not contain "prod". The tool cleans up its test user
+on exit.
+
 ## Testing strategy
 
 - **Unit**: table-driven tests for the state machine, safety rules and parsers

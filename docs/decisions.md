@@ -553,3 +553,27 @@ Tests use a fake clock that advances on demand.
 
 **Consequences:** Timeout tests run instantly. The cost is one extra parameter
 on the engine constructor.
+
+---
+
+## ADR-032: Idempotency key per confirmed request, not per route
+
+**Status:** Accepted
+
+**Context:** The original idempotency key was `booking:<user>:<pickup>:<drop>`.
+This blocked a parent from ever booking the same route twice, because the
+second booking would hit the unique constraint and be rejected. That is wrong:
+a parent who goes to the mandir every Tuesday needs two separate orders.
+
+**Decision:** Generate a request ID (UUID) when a ride request reaches
+`awaiting_confirmation`. The idempotency key is `booking:<request_id>`. A
+retry of the same "haan" uses the same request ID and creates exactly one
+order. A later request generates a new request ID and creates a new order.
+
+The request ID is cleared on every terminal or reset path (cancelled, error,
+completed, timeout, clarification exhausted) so the next request starts fresh.
+
+**Consequences:** A duplicate "haan" cannot create a second order. The same
+route on two different days creates two orders. The cost is that the
+conversation context must carry the request ID, and every terminal path must
+clear it.
