@@ -130,3 +130,14 @@ ON CONFLICT (wa_message_id) DO NOTHING;
 
 -- name: CountProcessedMessages :one
 SELECT count(*)::bigint FROM processed_messages;
+-- name: GetConversationForUpdate :one
+SELECT user_id, state, context, updated_at
+FROM conversations
+WHERE user_id = $1
+FOR UPDATE;
+
+-- name: CreateConversation :one
+INSERT INTO conversations (user_id, state, context)
+VALUES ($1, 'idle', '{}')
+ON CONFLICT (user_id) DO NOTHING
+RETURNING user_id, state, context, updated_at;

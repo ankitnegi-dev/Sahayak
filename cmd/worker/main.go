@@ -43,10 +43,11 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Task queue wiring lands in Phase 2, once Redis and asynq are in place.
-	// Until then, block until shutdown so the process can still be started,
-	// health-checked and deployed end to end.
-	log.Info("worker ready", "note", "no job handlers registered yet")
+	// Phase 5: the conversation engine handler is ready. It is not wired to
+	// a queue yet (Redis/asynq lands in Phase 9). Until then, block until
+	// shutdown so the process can still be started, health-checked and
+	// deployed end to end.
+	log.Info("worker ready", "handlers", "conversation.TextHandler (not yet queued)")
 
 	<-ctx.Done()
 	log.Info("shutdown signal received, draining")

@@ -57,6 +57,25 @@ func (q *Queries) CountProcessedMessages(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
+const createConversation = `-- name: CreateConversation :one
+INSERT INTO conversations (user_id, state, context)
+VALUES ($1, 'idle', '{}')
+ON CONFLICT (user_id) DO NOTHING
+RETURNING user_id, state, context, updated_at
+`
+
+func (q *Queries) CreateConversation(ctx context.Context, userID pgtype.UUID) (Conversation, error) {
+	row := q.db.QueryRow(ctx, createConversation, userID)
+	var i Conversation
+	err := row.Scan(
+		&i.UserID,
+		&i.State,
+		&i.Context,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createOrder = `-- name: CreateOrder :one
 INSERT INTO orders (user_id, type, status, pickup, drop_location, amount_paise, provider, provider_ref, idempotency_key)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -113,6 +132,25 @@ WHERE user_id = $1
 
 func (q *Queries) GetConversation(ctx context.Context, userID pgtype.UUID) (Conversation, error) {
 	row := q.db.QueryRow(ctx, getConversation, userID)
+	var i Conversation
+	err := row.Scan(
+		&i.UserID,
+		&i.State,
+		&i.Context,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getConversationForUpdate = `-- name: GetConversationForUpdate :one
+SELECT user_id, state, context, updated_at
+FROM conversations
+WHERE user_id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetConversationForUpdate(ctx context.Context, userID pgtype.UUID) (Conversation, error) {
+	row := q.db.QueryRow(ctx, getConversationForUpdate, userID)
 	var i Conversation
 	err := row.Scan(
 		&i.UserID,

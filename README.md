@@ -23,7 +23,7 @@ part-time).
 | 2 | WhatsApp webhook: signature verification, idempotency, queueing | **done** |
 | 3 | Voice pipeline: ASR providers, word error rate benchmark | **done, benchmark needs your recordings** |
 | 4 | Data layer: schema, goose migrations, sqlc | **done** |
-| 5 | Conversation engine: state machine, Claude tool use | not started |
+| 5 | Conversation engine: state machine, Claude tool use | **done** |
 | 6 | Safety layer: caps, approval rules, rate limits, kill switch | not started |
 | 7 | Child dashboard: Next.js + Go API | not started |
 | 8 | Booking: deep links, then Beckn/ONDC sandbox | not started |
