@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -185,6 +186,9 @@ func TestIntegration_AuditLogRestrictedRole(t *testing.T) {
 	err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sahayak_app')").Scan(&exists)
 	require.NoError(t, err)
 	if !exists {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("sahayak_app role does not exist; in CI this is a failure, not a skip")
+		}
 		t.Skip("sahayak_app role does not exist (run migration as superuser to create it)")
 	}
 
@@ -197,7 +201,7 @@ func TestIntegration_AuditLogRestrictedRole(t *testing.T) {
 	require.NoError(t, err)
 
 	// Connect as sahayak_app.
-	appPool, err := pgxpool.New(ctx, "postgres://sahayak_app:sahayak_app@localhost:5432/parentbot?sslmode=disable")
+	appPool, err := pgxpool.New(ctx, "postgres://sahayak_app:sahayak_app@localhost:5432/parentbot_test?sslmode=disable")
 	require.NoError(t, err)
 	defer appPool.Close()
 
@@ -217,6 +221,58 @@ func TestIntegration_AuditLogRestrictedRole(t *testing.T) {
 	// DELETE should fail.
 	_, err = appPool.Exec(ctx, "DELETE FROM audit_log WHERE id = $1", auditID)
 	require.Error(t, err)
+
+	// Verify grants: sahayak_app should have SELECT/INSERT/UPDATE on normal
+	// tables. We test this by attempting each operation on users.
+	userID2 := mustCreateUser(t, pool, "+919999999999", "parent")
+	var readBack string
+	err = appPool.QueryRow(ctx, "SELECT phone FROM users WHERE id = $1", userID2).Scan(&readBack)
+	require.NoError(t, err, "sahayak_app should have SELECT on users")
+	require.Equal(t, "+919999999999", readBack)
+
+	// UPDATE on a normal table should succeed.
+	_, err = appPool.Exec(ctx, "UPDATE users SET language = 'en' WHERE id = $1", userID2)
+	require.NoError(t, err, "sahayak_app should have UPDATE on users")
+
+	// INSERT on a normal table should succeed.
+	_, err = appPool.Exec(ctx, "INSERT INTO users (phone, role) VALUES ('+918888888888', 'parent')")
+	require.NoError(t, err, "sahayak_app should have INSERT on users")
+
+	// TRUNCATE should fail on every table.
+	for _, table := range []string{"users", "orders", "audit_log", "processed_messages"} {
+		_, err = appPool.Exec(ctx, "TRUNCATE TABLE "+table)
+		require.Error(t, err, "sahayak_app should not have TRUNCATE on %s", table)
+	}
+
+	// audit_log: only SELECT and INSERT, no UPDATE or DELETE (already tested above).
+	// Verify INSERT on audit_log works (already tested above via the INSERT).
+	// Verify no UPDATE on audit_log (already tested above).
+
+	// Verify that sahayak_app does NOT have UPDATE on audit_log by checking
+	// the information_schema.
+	var hasUpdate bool
+	err = appPool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM information_schema.role_table_grants WHERE grantee = 'sahayak_app' AND table_name = 'audit_log' AND privilege_type = 'UPDATE')").Scan(&hasUpdate)
+	require.NoError(t, err)
+	require.False(t, hasUpdate, "sahayak_app must not have UPDATE on audit_log")
+
+	var hasDelete bool
+	err = appPool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM information_schema.role_table_grants WHERE grantee = 'sahayak_app' AND table_name = 'audit_log' AND privilege_type = 'DELETE')").Scan(&hasDelete)
+	require.NoError(t, err)
+	require.False(t, hasDelete, "sahayak_app must not have DELETE on audit_log")
+
+	var hasInsert bool
+	err = appPool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM information_schema.role_table_grants WHERE grantee = 'sahayak_app' AND table_name = 'audit_log' AND privilege_type = 'INSERT')").Scan(&hasInsert)
+	require.NoError(t, err)
+	require.True(t, hasInsert, "sahayak_app must have INSERT on audit_log")
+
+	var hasSelect bool
+	err = appPool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM information_schema.role_table_grants WHERE grantee = 'sahayak_app' AND table_name = 'audit_log' AND privilege_type = 'SELECT')").Scan(&hasSelect)
+	require.NoError(t, err)
+	require.True(t, hasSelect, "sahayak_app must have SELECT on audit_log")
 }
 
 func TestIntegration_CheckConstraints(t *testing.T) {
