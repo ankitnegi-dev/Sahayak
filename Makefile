@@ -39,8 +39,8 @@ test: ## Run unit tests with race detector and coverage
 	go test -race "-coverprofile=coverage.out" "-covermode=atomic" ./...
 
 .PHONY: test-integration
-test-integration: ## Run integration tests against a real Postgres
-	go test -tags integration -race -timeout 300s ./internal/store/...
+test-integration: ## Run integration tests against a real Postgres (database name must end in _test)
+	if (-not $$env:TEST_DATABASE_URL) { $$env:TEST_DATABASE_URL = "postgres://parentbot:parentbot@localhost:5432/parentbot_test?sslmode=disable" }; go test -tags integration -race -timeout 300s ./internal/store/...
 
 .PHONY: migrate-up
 migrate-up: ## Apply all pending migrations
