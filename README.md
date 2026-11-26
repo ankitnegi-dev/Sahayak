@@ -259,6 +259,46 @@ or FakeExtractor.
 The database name must not contain "prod". The tool cleans up its test user
 on exit.
 
+## Safety layer
+
+Phase 6 adds a safety layer that blocks or escalates bookings before they
+happen. The LLM cannot influence these rules (ADR-004).
+
+### Rules (evaluated in order, first non-Allow wins)
+
+1. **Kill switch** — Deny if `limits.kill_switch` is true
+2. **Allowed hours** — NeedsApproval if outside `[start, end)` in IST (crosses midnight supported)
+3. **Per-ride cap** — Deny if fare > `per_ride_cap_paise` (skipped if fare unknown)
+4. **Daily cap** — Deny if today's spend + fare > `daily_cap_paise` (IST day)
+5. **Daily booking count** — NeedsApproval if more than 6 bookings today
+6. **Unsaved destination** — NeedsApproval if drop is not a saved place
+7. **Rapid repeats** — NeedsApproval if more than 2 attempts in 10 minutes
+
+### Defaults (when no limits row exists)
+
+| Setting | Default |
+|---|---|
+| Per-ride cap | Rs. 500 (50000 paise) |
+| Daily cap | Rs. 1500 (150000 paise) |
+| Allowed hours | 06:00 - 22:00 IST |
+| Max daily bookings | 6 |
+
+### Approval flow
+
+When a rule returns NeedsApproval, an approval row is created and the
+conversation moves to `awaiting_approval`. The child must approve via the
+dashboard or `/approve <code>` in chat. Approval unlocks the confirmation
+step but never replaces the parent's "haan".
+
+### Manual testing in cmd/chat
+
+```
+/limits                          # show current limits
+/killswitch on|off               # toggle kill switch
+/approve <code>                  # approve a pending approval (as child)
+/deny <code>                     # deny a pending approval (as child)
+```
+
 ## Testing strategy
 
 - **Unit**: table-driven tests for the state machine, safety rules and parsers
