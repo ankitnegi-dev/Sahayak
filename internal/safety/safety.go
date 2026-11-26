@@ -59,6 +59,10 @@ var _ conversation.SafetyChecker = (*Checker)(nil)
 
 // Check implements conversation.SafetyChecker.
 func (c *Checker) Check(ctx context.Context, req conversation.SafetyRequest) conversation.SafetyDecision {
+	if c.store == nil {
+		return conversation.SafetyDecision{Type: conversation.SafetyDeny, Reason: "safety_check_failed"}
+	}
+
 	now := req.Now
 	if now.IsZero() {
 		now = c.clock.Now()
@@ -158,7 +162,7 @@ func (c *Checker) Check(ctx context.Context, req conversation.SafetyRequest) con
 func (c *Checker) loadLimits(ctx context.Context, userID string) (store.Limit, error) {
 	limits, err := c.store.Queries().GetLimits(ctx, store.PgtypeUUID(userID))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(store.MapError(err), store.ErrNotFound) {
 			// Use conservative defaults.
 			return store.Limit{
 				PerRideCapPaise:   c.config.DefaultPerRideCapPaise,
@@ -169,6 +173,18 @@ func (c *Checker) loadLimits(ctx context.Context, userID string) (store.Limit, e
 			}, nil
 		}
 		return store.Limit{}, err
+	}
+	// Apply defaults for zero values (a limits row might have only some
+	// fields set).
+	if limits.PerRideCapPaise == 0 {
+		limits.PerRideCapPaise = c.config.DefaultPerRideCapPaise
+	}
+	if limits.DailyCapPaise == 0 {
+		limits.DailyCapPaise = c.config.DefaultDailyCapPaise
+	}
+	if limits.AllowedHoursStart == 0 && limits.AllowedHoursEnd == 0 {
+		limits.AllowedHoursStart = int16(c.config.DefaultAllowedHoursStart)
+		limits.AllowedHoursEnd = int16(c.config.DefaultAllowedHoursEnd)
 	}
 	return limits, nil
 }

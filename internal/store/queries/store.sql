@@ -117,9 +117,12 @@ WHERE user_id = $1
 
 -- name: CountRecentBookingAttempts :one
 -- Counts booking attempts in the last N minutes (for rapid-repeat detection).
+-- Cancelled and failed orders are excluded: a cancelled booking is not a
+-- rapid repeat, it is a change of mind.
 SELECT count(*)::bigint AS total
 FROM orders
 WHERE user_id = $1
+  AND status NOT IN ('cancelled', 'failed')
   AND created_at >= now() - ($2::text || ' minutes')::interval;
 
 -- name: AppendAudit :one

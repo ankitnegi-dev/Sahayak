@@ -61,6 +61,7 @@ const countRecentBookingAttempts = `-- name: CountRecentBookingAttempts :one
 SELECT count(*)::bigint AS total
 FROM orders
 WHERE user_id = $1
+  AND status NOT IN ('cancelled', 'failed')
   AND created_at >= now() - ($2::text || ' minutes')::interval
 `
 
@@ -70,6 +71,8 @@ type CountRecentBookingAttemptsParams struct {
 }
 
 // Counts booking attempts in the last N minutes (for rapid-repeat detection).
+// Cancelled and failed orders are excluded: a cancelled booking is not a
+// rapid repeat, it is a change of mind.
 func (q *Queries) CountRecentBookingAttempts(ctx context.Context, arg CountRecentBookingAttemptsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countRecentBookingAttempts, arg.UserID, arg.Column2)
 	var total int64
