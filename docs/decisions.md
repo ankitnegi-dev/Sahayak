@@ -606,3 +606,88 @@ repeat bookings.
 
 **Consequences:** No swallowed errors. No stuck booking state. The order is
 always findable for Phase 9 reconciliation.
+
+---
+
+## ADR-034: Fail closed in the safety layer
+
+**Status:** Accepted
+
+**Context:** Elderly users are prime scam targets. A safety check that errors
+or encounters missing data must never allow a booking.
+
+**Decision:** Every rule returns Deny or NeedsApproval on any internal error.
+Missing limits use conservative defaults (per-ride 50000 paise, daily 150000
+paise, hours 06:00-22:00), never "no limits". The safety checker never
+returns Allow on error.
+
+**Consequences:** A database outage blocks bookings rather than allowing
+unlimited ones. The cost is that transient errors look like safety blocks
+to the user.
+
+---
+
+## ADR-035: Safety rules evaluated in fixed order
+
+**Status:** Accepted
+
+**Context:** Multiple rules can apply to one request. The order matters
+because the first non-Allow wins.
+
+**Decision:** Rules are evaluated in this order: kill switch, allowed hours,
+per-ride cap, daily cap, daily booking count, unsaved destination, rapid
+repeats. Each returns a specific reason code.
+
+**Consequences:** The reason code tells the parent and the audit log exactly
+why a booking was blocked. The order ensures the most severe restriction
+(kill switch) is checked first.
+
+---
+
+## ADR-036: IST day boundary for daily caps
+
+**Status:** Accepted
+
+**Context:** The original SumTodaySpend query used a UTC day. India is UTC+5:30,
+so a booking at 23:30 IST would be counted on the next UTC day, allowing the
+daily cap to be exceeded.
+
+**Decision:** Pass the start of the IST calendar day as a parameter. The
+query filters `created_at >= $start_of_ist_day`.
+
+**Consequences:** Daily caps reset at midnight IST. The cost is that the
+caller must compute the IST day boundary.
+
+---
+
+## ADR-037: Approval unlocks but never replaces confirmation
+
+**Status:** Accepted
+
+**Context:** A child approving a booking could be mistaken for the parent
+confirming it, creating a path where a booking happens without the parent's
+explicit "haan".
+
+**Decision:** Approval creates an approval row and moves the conversation to
+awaiting_approval. Only after approval does the engine return to the
+confirmation step, where the parent must still say "haan". Approval never
+replaces confirmation.
+
+**Consequences:** No booking happens without both child approval (when needed)
+and parent confirmation. The cost is an extra step in the flow.
+
+---
+
+## ADR-038: Re-check safety at booking time
+
+**Status:** Accepted
+
+**Context:** State changes between the safety check (at confirmation time) and
+the booking (after "haan") could make a previously-safe booking unsafe.
+
+**Decision:** The safety check runs again inside the same transaction that
+creates the order. Deny always wins over a stale approval.
+
+**Consequences:** A booking that was safe when confirmed but is unsafe when
+booked is denied. The parent sees a "not allowed" message instead of a
+booking.
