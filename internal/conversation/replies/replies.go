@@ -73,7 +73,13 @@ func RenderAskDrop(lang Language) string {
 
 // RenderConfirm builds the confirmation message.
 func RenderConfirm(lang Language, pickup, drop string, farePaise int64) string {
-	t := For(lang).Confirm
+	tmpl := For(lang).Confirm
+	if farePaise <= 0 {
+		// Omit the fare line when no fare is known. Showing "Rs. 0.00"
+		// is misleading.
+		tmpl = strings.ReplaceAll(tmpl, "Estimated fare: Rs. {fare}\n", "Fare will appear in the cab app.\n")
+	}
+	t := tmpl
 	t = strings.ReplaceAll(t, "{pickup}", pickup)
 	t = strings.ReplaceAll(t, "{drop}", drop)
 	t = strings.ReplaceAll(t, "{fare}", FormatFare(farePaise))
@@ -127,6 +133,11 @@ func RenderBookingFailed(lang Language) string {
 // RenderNoPendingBooking returns the "nothing to confirm" message.
 func RenderNoPendingBooking(lang Language) string {
 	return For(lang).NoPendingBooking
+}
+
+// RenderAlreadyBooked returns the "already booked" message.
+func RenderAlreadyBooked(lang Language) string {
+	return For(lang).AlreadyBooked
 }
 
 // RenderBookingInProgress returns the "booking in progress" message.

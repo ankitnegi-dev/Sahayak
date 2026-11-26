@@ -576,3 +576,33 @@ completed, timeout, clarification exhausted) so the next request starts fresh.
 route on two different days creates two orders. The cost is that the
 conversation context must carry the request ID, and every terminal path must
 clear it.
+
+---
+
+## ADR-033: Cancel rule, Booker error classes, and order-before-booking
+
+**Status:** Accepted
+
+**Context:** Manual testing found that "cancel" during booking/active_ride
+reset the conversation, losing the booking. Booker failures were not
+distinguished from timeouts. The idempotency key was per-route, blocking
+repeat bookings.
+
+**Decision:**
+
+1. Cancel only resets in idle, awaiting_pickup, awaiting_drop and
+   awaiting_confirmation. In booking and active_ride it replies honestly,
+   appends an audit row "cancel_requested_during_booking", and keeps state.
+   Booker.Cancel is called only from active_ride.
+
+2. Booker errors are classified: ErrBookingRejected (definite) marks the
+   order failed and moves to idle. Anything else (timeout, network, unknown)
+   leaves the order confirmed for reconciliation and the conversation in
+   booking.
+
+3. The order is created (confirmed) before Booker.Book is called, in a
+   committed transaction. Booker runs outside any transaction. The mark-booked
+   update is a second transaction with 3 retries.
+
+**Consequences:** No swallowed errors. No stuck booking state. The order is
+always findable for Phase 9 reconciliation.

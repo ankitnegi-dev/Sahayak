@@ -55,6 +55,10 @@ const IdleTimeout = 10 * time.Minute
 // it is moved to idle for reconciliation.
 const BookingTimeout = 5 * time.Minute
 
+// ActiveRideTimeout is how long an active ride may stay before it is moved
+// to idle. Default 3 hours.
+const ActiveRideTimeout = 3 * time.Hour
+
 // IsTimedOut reports whether a collecting conversation has been idle too long.
 func IsTimedOut(state State, lastPromptAt time.Time, now time.Time) bool {
 	if !state.IsCollecting() {

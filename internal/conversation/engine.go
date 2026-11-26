@@ -97,6 +97,19 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 			cc = ConversationContext{}
 		}
 
+		// Active ride timeout: move to idle after 3 hours.
+		if State(convo.State) == StateActiveRide && !cc.LastPromptAt.IsZero() && now.Sub(cc.LastPromptAt) > ActiveRideTimeout {
+			convo.State = string(StateIdle)
+			_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
+				Actor:      userID,
+				Action:     "active_ride_timeout",
+				EntityType: pgtypeText("conversation"),
+				EntityID:   pgtypeText(userID),
+				Details:    []byte("{}"),
+			})
+			cc = ConversationContext{}
+		}
+
 		// Booking timeout: if a booking has been pending too long, move to idle
 		// for reconciliation. The order stays in its current state (confirmed
 		// or booked) and Phase 9 reconciliation will handle it.
@@ -137,6 +150,12 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		}
 		if !isValidIntent(intent) {
 			intent = llm.Intent{Action: llm.ActionUnknown, Confidence: 0}
+		}
+
+		// Reset context on a new booking request from an active or terminal state.
+		// Do NOT reset from idle, because idle may still be mid-clarification.
+		if intent.Action == llm.ActionBookRide && (state == StateActiveRide || state == StateCompleted || state == StateCancelled || state == StateError) {
+			cc = ConversationContext{}
 		}
 
 		// Resolve places from intent into context.
@@ -233,12 +252,6 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		nextState = state
 		replyText = ""
 
-		// "haan" while booking: booking in progress.
-		if state == StateBooking && intent.Action == llm.ActionConfirm {
-			nextState = StateBooking
-			replyText = replies.RenderBookingInProgress(lang)
-		}
-
 		// From error state, next message starts fresh.
 		if state == StateError {
 			state = StateIdle
@@ -265,7 +278,7 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 				idempotencyKey := "booking:" + cc.RequestID
 
 				// Create order (confirmed) in this transaction.
-				_, dbErr := q.CreateOrder(ctx, store.CreateOrderParams{
+				order, dbErr := q.CreateOrder(ctx, store.CreateOrderParams{
 					UserID:         pgtypeUUID(userID),
 					Type:           "ride",
 					Status:         "confirmed",
@@ -289,7 +302,7 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 						switch existingOrder.Status {
 						case "booked", "completed":
 							nextState = StateActiveRide
-							replyText = replies.RenderBooked(lang, "https://example.com/ride")
+							replyText = replies.RenderAlreadyBooked(lang)
 						case "failed":
 							nextState = StateError
 							replyText = replies.RenderBookingFailed(lang)
@@ -303,7 +316,21 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 					}
 					cc.RequestID = ""
 				} else {
-					// Order created. Booking will happen in phase 2.
+					// Order created. Append audit row in the same transaction.
+					details, _ := json.Marshal(map[string]any{
+						"order_id":   uuidToString(order.ID),
+						"request_id": cc.RequestID,
+					})
+					_, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+						Actor:      userID,
+						Action:     "order_created",
+						EntityType: pgtypeText("order"),
+						EntityID:   pgtypeText(uuidToString(order.ID)),
+						Details:    details,
+					})
+					if auditErr != nil {
+						return fmt.Errorf("append audit: %w", auditErr)
+					}
 					nextState = StateBooking
 					needsBooking = true
 					replyText = "" // will be set after booking
@@ -342,7 +369,9 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 				}
 				// Only call Booker.Cancel from active_ride.
 				if state == StateActiveRide && e.booker != nil {
-					_ = e.booker.Cancel(ctx, "")
+					if err := e.booker.Cancel(ctx, ""); err != nil {
+						slog.Error("booker cancel failed", "error", err, "user_id", userID)
+					}
 				}
 			} else {
 				nextState = StateCancelled
@@ -352,8 +381,20 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 			}
 		}
 
+		// "haan" while booking: booking in progress.
+		if intent.Action == llm.ActionConfirm && state == StateBooking {
+			nextState = state
+			replyText = replies.RenderBookingInProgress(lang)
+		}
+
+		// "haan" while already booked.
+		if intent.Action == llm.ActionConfirm && state == StateActiveRide {
+			nextState = state
+			replyText = replies.RenderAlreadyBooked(lang)
+		}
+
 		// Handle confirm with nothing pending.
-		if intent.Action == llm.ActionConfirm && state != StateAwaitingConfirmation {
+		if intent.Action == llm.ActionConfirm && state != StateAwaitingConfirmation && state != StateActiveRide && state != StateBooking {
 			nextState = state
 			replyText = replies.RenderNoPendingBooking(lang)
 		}
@@ -368,6 +409,13 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		if intent.Action == llm.ActionUnknown && replyText == "" {
 			nextState = state
 			replyText = replies.RenderUnknown(lang)
+		}
+
+		// One active ride at a time: a new booking during active_ride or
+		// booking is refused.
+		if (state == StateActiveRide || state == StateBooking) && intent.Action == llm.ActionBookRide && replyText == "" {
+			nextState = state
+			replyText = replies.RenderAlreadyBooked(lang)
 		}
 
 		// Handle book_ride intent (collecting places).
