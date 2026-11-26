@@ -100,11 +100,27 @@ ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: SumTodaySpend :one
+-- $2 is the start of the IST day (passed by the caller).
 SELECT COALESCE(SUM(amount_paise), 0)::bigint AS total
 FROM orders
 WHERE user_id = $1
   AND status NOT IN ('cancelled', 'failed')
-  AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC');
+  AND created_at >= $2;
+
+-- name: CountTodayBookings :one
+-- Counts non-cancelled, non-failed orders created since the start of the IST day.
+SELECT count(*)::bigint AS total
+FROM orders
+WHERE user_id = $1
+  AND status NOT IN ('cancelled', 'failed')
+  AND created_at >= $2;
+
+-- name: CountRecentBookingAttempts :one
+-- Counts booking attempts in the last N minutes (for rapid-repeat detection).
+SELECT count(*)::bigint AS total
+FROM orders
+WHERE user_id = $1
+  AND created_at >= now() - ($2::text || ' minutes')::interval;
 
 -- name: AppendAudit :one
 INSERT INTO audit_log (actor, action, entity_type, entity_id, details)
@@ -128,6 +144,37 @@ ORDER BY created_at DESC;
 INSERT INTO processed_messages (wa_message_id)
 VALUES ($1)
 ON CONFLICT (wa_message_id) DO NOTHING;
+
+-- name: CreateApproval :one
+INSERT INTO approvals (user_id, child_id, order_snapshot, reason, short_code, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at;
+
+-- name: GetApprovalByCode :one
+SELECT id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+FROM approvals
+WHERE short_code = $1;
+
+-- name: GetApproval :one
+SELECT id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+FROM approvals
+WHERE id = $1;
+
+-- name: UpdateApprovalStatus :exec
+UPDATE approvals
+SET status = $2, decided_at = now()
+WHERE id = $1 AND status = 'pending';
+
+-- name: ExpireStaleApprovals :exec
+UPDATE approvals
+SET status = 'expired', decided_at = now()
+WHERE status = 'pending' AND expires_at < now();
+
+-- name: ListPendingApprovalsForChild :many
+SELECT id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+FROM approvals
+WHERE child_id = $1 AND status = 'pending' AND expires_at > now()
+ORDER BY created_at DESC;
 
 -- name: CountProcessedMessages :one
 SELECT count(*)::bigint FROM processed_messages;

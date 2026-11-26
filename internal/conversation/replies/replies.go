@@ -135,6 +135,40 @@ func RenderNoPendingBooking(lang Language) string {
 	return For(lang).NoPendingBooking
 }
 
+// RenderSafetyDeny returns a deny message for a safety reason.
+func RenderSafetyDeny(lang Language, reason string) string {
+	switch reason {
+	case "kill_switch":
+		if lang == LangEnglish {
+			return "Bookings are currently disabled by your family."
+		}
+		return "Aapke family ne bookings band kar di hain."
+	case "per_ride_cap":
+		if lang == LangEnglish {
+			return "This ride exceeds your per-ride spending limit."
+		}
+		return "Yeh ride aapki per-ride limit se zyada hai."
+	case "daily_cap":
+		if lang == LangEnglish {
+			return "You have reached your daily spending limit."
+		}
+		return "Aapki daily spending limit puri ho gayi hai."
+	default:
+		if lang == LangEnglish {
+			return "This booking is not allowed right now."
+		}
+		return "Yeh booking abhi allowed nahi hai."
+	}
+}
+
+// RenderApprovalNeeded returns the "being checked" message.
+func RenderApprovalNeeded(lang Language) string {
+	if lang == LangEnglish {
+		return "Let me check with your family first. I'll get back to you."
+	}
+	return "Main aapke family se pooch raha hoon. Thoda wait karo."
+}
+
 // RenderAlreadyBooked returns the "already booked" message.
 func RenderAlreadyBooked(lang Language) string {
 	return For(lang).AlreadyBooked

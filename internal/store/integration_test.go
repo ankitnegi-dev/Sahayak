@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
@@ -326,7 +327,7 @@ func TestIntegration_WithTxRollback(t *testing.T) {
 
 	err := store.WithTx(ctx, func(q *Queries) error {
 		_, err := q.CreateOrder(ctx, CreateOrderParams{
-			UserID:         pgtypeUUID(userID),
+			UserID:         PgtypeUUID(userID),
 			Type:           "ride",
 			Status:         "created",
 			IdempotencyKey: "rollback-test",
@@ -341,7 +342,7 @@ func TestIntegration_WithTxRollback(t *testing.T) {
 
 	// The order should NOT exist because the transaction rolled back.
 	_, err = store.Queries().GetOrderByUserAndIdempotencyKey(ctx, GetOrderByUserAndIdempotencyKeyParams{
-		UserID:         pgtypeUUID(userID),
+		UserID:         PgtypeUUID(userID),
 		IdempotencyKey: "rollback-test",
 	})
 	require.Error(t, err)
@@ -360,7 +361,7 @@ func TestIntegration_WithTxPanicRollback(t *testing.T) {
 		defer func() { recover() }()
 		store.WithTx(ctx, func(q *Queries) error {
 			_, err := q.CreateOrder(ctx, CreateOrderParams{
-				UserID:         pgtypeUUID(userID),
+				UserID:         PgtypeUUID(userID),
 				Type:           "ride",
 				Status:         "created",
 				IdempotencyKey: "panic-test",
@@ -372,7 +373,7 @@ func TestIntegration_WithTxPanicRollback(t *testing.T) {
 
 	// The order should NOT exist because the panic triggered a rollback.
 	_, err := store.Queries().GetOrderByUserAndIdempotencyKey(ctx, GetOrderByUserAndIdempotencyKeyParams{
-		UserID:         pgtypeUUID(userID),
+		UserID:         PgtypeUUID(userID),
 		IdempotencyKey: "panic-test",
 	})
 	require.Error(t, err)
@@ -408,7 +409,10 @@ func TestIntegration_SumTodaySpend(t *testing.T) {
 	}
 
 	store := NewStore(pool)
-	total, err := store.Queries().SumTodaySpend(ctx, pgtypeUUID(userID))
+	total, err := store.Queries().SumTodaySpend(ctx, SumTodaySpendParams{
+		UserID:    PgtypeUUID(userID),
+		CreatedAt: pgtype.Timestamptz{Time: time.Now().Add(-24 * time.Hour), Valid: true},
+	})
 	require.NoError(t, err)
 
 	// Sum should be 10000+20000+30000+40000 = 100000 (excluding cancelled and failed).
@@ -456,7 +460,7 @@ func TestIntegration_UpdateOrderStatusAndAudit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify status changed.
-	order, err := store.Queries().GetOrder(ctx, pgtypeUUID(orderID))
+	order, err := store.Queries().GetOrder(ctx, PgtypeUUID(orderID))
 	require.NoError(t, err)
 	require.Equal(t, "confirmed", order.Status)
 

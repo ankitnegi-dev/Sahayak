@@ -28,6 +28,7 @@ import (
 	"github.com/ankitnegi-dev/Sahayak/internal/config"
 	"github.com/ankitnegi-dev/Sahayak/internal/conversation"
 	"github.com/ankitnegi-dev/Sahayak/internal/llm"
+	"github.com/ankitnegi-dev/Sahayak/internal/safety"
 	"github.com/ankitnegi-dev/Sahayak/internal/store"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -98,7 +99,8 @@ func run() error {
 	}
 
 	store := store.NewStore(pool)
-	engine := conversation.NewEngine(store, extractor, &conversation.FakeBooker{}, conversation.PermissiveSafety{}, nil)
+	safetyChecker := safety.NewChecker(store, conversation.RealClock{}, safety.DefaultConfig())
+	engine := conversation.NewEngine(store, extractor, &conversation.FakeBooker{}, safetyChecker, nil)
 
 	fmt.Printf("Test user created: %s\n", userID)
 	fmt.Println("Saved places: ghar, mandir")

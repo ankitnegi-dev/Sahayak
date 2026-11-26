@@ -57,6 +57,87 @@ func (q *Queries) CountProcessedMessages(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
+const countRecentBookingAttempts = `-- name: CountRecentBookingAttempts :one
+SELECT count(*)::bigint AS total
+FROM orders
+WHERE user_id = $1
+  AND created_at >= now() - ($2::text || ' minutes')::interval
+`
+
+type CountRecentBookingAttemptsParams struct {
+	UserID  pgtype.UUID `db:"user_id" json:"user_id"`
+	Column2 string      `db:"column_2" json:"column_2"`
+}
+
+// Counts booking attempts in the last N minutes (for rapid-repeat detection).
+func (q *Queries) CountRecentBookingAttempts(ctx context.Context, arg CountRecentBookingAttemptsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRecentBookingAttempts, arg.UserID, arg.Column2)
+	var total int64
+	err := row.Scan(&total)
+	return total, err
+}
+
+const countTodayBookings = `-- name: CountTodayBookings :one
+SELECT count(*)::bigint AS total
+FROM orders
+WHERE user_id = $1
+  AND status NOT IN ('cancelled', 'failed')
+  AND created_at >= $2
+`
+
+type CountTodayBookingsParams struct {
+	UserID    pgtype.UUID        `db:"user_id" json:"user_id"`
+	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// Counts non-cancelled, non-failed orders created since the start of the IST day.
+func (q *Queries) CountTodayBookings(ctx context.Context, arg CountTodayBookingsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTodayBookings, arg.UserID, arg.CreatedAt)
+	var total int64
+	err := row.Scan(&total)
+	return total, err
+}
+
+const createApproval = `-- name: CreateApproval :one
+INSERT INTO approvals (user_id, child_id, order_snapshot, reason, short_code, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+`
+
+type CreateApprovalParams struct {
+	UserID        pgtype.UUID        `db:"user_id" json:"user_id"`
+	ChildID       pgtype.UUID        `db:"child_id" json:"child_id"`
+	OrderSnapshot []byte             `db:"order_snapshot" json:"order_snapshot"`
+	Reason        string             `db:"reason" json:"reason"`
+	ShortCode     string             `db:"short_code" json:"short_code"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
+func (q *Queries) CreateApproval(ctx context.Context, arg CreateApprovalParams) (Approval, error) {
+	row := q.db.QueryRow(ctx, createApproval,
+		arg.UserID,
+		arg.ChildID,
+		arg.OrderSnapshot,
+		arg.Reason,
+		arg.ShortCode,
+		arg.ExpiresAt,
+	)
+	var i Approval
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChildID,
+		&i.OrderSnapshot,
+		&i.Reason,
+		&i.Status,
+		&i.ShortCode,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
 const createConversation = `-- name: CreateConversation :one
 INSERT INTO conversations (user_id, state, context)
 VALUES ($1, 'idle', '{}')
@@ -121,6 +202,65 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order
 		&i.IdempotencyKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const expireStaleApprovals = `-- name: ExpireStaleApprovals :exec
+UPDATE approvals
+SET status = 'expired', decided_at = now()
+WHERE status = 'pending' AND expires_at < now()
+`
+
+func (q *Queries) ExpireStaleApprovals(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, expireStaleApprovals)
+	return err
+}
+
+const getApproval = `-- name: GetApproval :one
+SELECT id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+FROM approvals
+WHERE id = $1
+`
+
+func (q *Queries) GetApproval(ctx context.Context, id pgtype.UUID) (Approval, error) {
+	row := q.db.QueryRow(ctx, getApproval, id)
+	var i Approval
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChildID,
+		&i.OrderSnapshot,
+		&i.Reason,
+		&i.Status,
+		&i.ShortCode,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
+const getApprovalByCode = `-- name: GetApprovalByCode :one
+SELECT id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+FROM approvals
+WHERE short_code = $1
+`
+
+func (q *Queries) GetApprovalByCode(ctx context.Context, shortCode string) (Approval, error) {
+	row := q.db.QueryRow(ctx, getApprovalByCode, shortCode)
+	var i Approval
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChildID,
+		&i.OrderSnapshot,
+		&i.Reason,
+		&i.Status,
+		&i.ShortCode,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.DecidedAt,
 	)
 	return i, err
 }
@@ -443,6 +583,44 @@ func (q *Queries) ListOrdersByUser(ctx context.Context, arg ListOrdersByUserPara
 	return items, nil
 }
 
+const listPendingApprovalsForChild = `-- name: ListPendingApprovalsForChild :many
+SELECT id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+FROM approvals
+WHERE child_id = $1 AND status = 'pending' AND expires_at > now()
+ORDER BY created_at DESC
+`
+
+func (q *Queries) ListPendingApprovalsForChild(ctx context.Context, childID pgtype.UUID) ([]Approval, error) {
+	rows, err := q.db.Query(ctx, listPendingApprovalsForChild, childID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Approval{}
+	for rows.Next() {
+		var i Approval
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ChildID,
+			&i.OrderSnapshot,
+			&i.Reason,
+			&i.Status,
+			&i.ShortCode,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.DecidedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSavedPlaces = `-- name: ListSavedPlaces :many
 SELECT id, user_id, label, address, lat, lng, created_at, updated_at
 FROM saved_places
@@ -514,14 +692,36 @@ SELECT COALESCE(SUM(amount_paise), 0)::bigint AS total
 FROM orders
 WHERE user_id = $1
   AND status NOT IN ('cancelled', 'failed')
-  AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+  AND created_at >= $2
 `
 
-func (q *Queries) SumTodaySpend(ctx context.Context, userID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, sumTodaySpend, userID)
+type SumTodaySpendParams struct {
+	UserID    pgtype.UUID        `db:"user_id" json:"user_id"`
+	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// $2 is the start of the IST day (passed by the caller).
+func (q *Queries) SumTodaySpend(ctx context.Context, arg SumTodaySpendParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumTodaySpend, arg.UserID, arg.CreatedAt)
 	var total int64
 	err := row.Scan(&total)
 	return total, err
+}
+
+const updateApprovalStatus = `-- name: UpdateApprovalStatus :exec
+UPDATE approvals
+SET status = $2, decided_at = now()
+WHERE id = $1 AND status = 'pending'
+`
+
+type UpdateApprovalStatusParams struct {
+	ID     pgtype.UUID `db:"id" json:"id"`
+	Status string      `db:"status" json:"status"`
+}
+
+func (q *Queries) UpdateApprovalStatus(ctx context.Context, arg UpdateApprovalStatusParams) error {
+	_, err := q.db.Exec(ctx, updateApprovalStatus, arg.ID, arg.Status)
+	return err
 }
 
 const updateOrderStatus = `-- name: UpdateOrderStatus :exec

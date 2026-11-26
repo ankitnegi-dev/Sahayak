@@ -14,7 +14,7 @@ import (
 func (s *Store) UpdateOrderStatusAndAudit(ctx context.Context, orderID, newStatus, actor, action string, details map[string]any) error {
 	return s.WithTx(ctx, func(q *Queries) error {
 		if err := q.UpdateOrderStatus(ctx, UpdateOrderStatusParams{
-			ID:     pgtypeUUID(orderID),
+			ID:     PgtypeUUID(orderID),
 			Status: newStatus,
 		}); err != nil {
 			return MapError(err)

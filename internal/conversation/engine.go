@@ -262,15 +262,27 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		// that leads to booking. An explicit "haan" is required.
 		if state == StateAwaitingConfirmation && intent.Action == llm.ActionConfirm && replyText == "" {
 			// Safety check.
-			if err := e.safety.Check(ctx, SafetyRequest{
-				UserID: userID,
-				Pickup: cc.Pickup,
-				Drop:   cc.Drop,
-			}); err != nil {
+			decision := e.safety.Check(ctx, SafetyRequest{
+				UserID:       userID,
+				Pickup:       cc.Pickup,
+				Drop:         cc.Drop,
+				IsSavedPlace: false,
+				FarePaise:    cc.FarePaise,
+				Now:          now,
+			})
+			switch decision.Type {
+			case SafetyDeny:
 				nextState = StateError
-				replyText = replies.RenderBookingFailed(lang)
+				replyText = replies.RenderSafetyDeny(lang, decision.Reason)
 				cc.RequestID = ""
-			} else {
+			case SafetyNeedsApproval:
+				// Create approval, move to awaiting_approval.
+				nextState = StateAwaitingApproval
+				replyText = replies.RenderApprovalNeeded(lang)
+				// Store the reason in context for later.
+				cc.PendingAction = decision.Reason
+			default:
+				// Allow: proceed to booking.
 				// Generate request ID if not already set.
 				if cc.RequestID == "" {
 					cc.RequestID = newRequestID()

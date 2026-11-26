@@ -9,6 +9,7 @@ const (
 	StateAwaitingPickup       State = "awaiting_pickup"
 	StateAwaitingDrop         State = "awaiting_drop"
 	StateAwaitingConfirmation State = "awaiting_confirmation"
+	StateAwaitingApproval     State = "awaiting_approval"
 	StateBooking              State = "booking"
 	StateActiveRide           State = "active_ride"
 	StateCompleted            State = "completed"
@@ -19,7 +20,7 @@ const (
 // AllStates lists every valid state, in dependency order.
 var AllStates = []State{
 	StateIdle, StateAwaitingPickup, StateAwaitingDrop,
-	StateAwaitingConfirmation, StateBooking, StateActiveRide,
+	StateAwaitingConfirmation, StateAwaitingApproval, StateBooking, StateActiveRide,
 	StateCompleted, StateCancelled, StateError,
 }
 

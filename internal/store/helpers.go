@@ -4,8 +4,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// pgtypeUUID parses a string into a pgtype.UUID.
-func pgtypeUUID(s string) pgtype.UUID {
+// PgtypeUUID parses a string into a pgtype.UUID.
+func PgtypeUUID(s string) pgtype.UUID {
 	var u pgtype.UUID
 	_ = u.Scan(s)
 	return u

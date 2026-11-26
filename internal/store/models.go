@@ -8,6 +8,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Approval struct {
+	ID            pgtype.UUID        `db:"id" json:"id"`
+	UserID        pgtype.UUID        `db:"user_id" json:"user_id"`
+	ChildID       pgtype.UUID        `db:"child_id" json:"child_id"`
+	OrderSnapshot []byte             `db:"order_snapshot" json:"order_snapshot"`
+	Reason        string             `db:"reason" json:"reason"`
+	Status        string             `db:"status" json:"status"`
+	ShortCode     string             `db:"short_code" json:"short_code"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	DecidedAt     pgtype.Timestamptz `db:"decided_at" json:"decided_at"`
+}
+
 type AuditLog struct {
 	ID         int64              `db:"id" json:"id"`
 	Actor      string             `db:"actor" json:"actor"`
