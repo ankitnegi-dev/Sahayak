@@ -1,4 +1,4 @@
-﻿# Architecture Decision Log
+# Architecture Decision Log
 
 Every non-obvious choice goes here, written at the time it is made. The goal is
 that a future reader (including future me) understands *why*, not just *what*.
