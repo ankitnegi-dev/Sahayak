@@ -98,7 +98,7 @@ func run() error {
 	}
 
 	store := store.NewStore(pool)
-	engine := conversation.NewEngine(store, extractor, conversation.FakeBooker{DeepLink: "https://fake/cab"}, conversation.PermissiveSafety{}, nil)
+	engine := conversation.NewEngine(store, extractor, &conversation.FakeBooker{DeepLink: "https://fake/cab"}, conversation.PermissiveSafety{}, nil)
 
 	fmt.Printf("Test user created: %s\n", userID)
 	fmt.Println("Saved places: ghar, mandir")

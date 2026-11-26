@@ -51,6 +51,10 @@ func UnmarshalContext(data []byte) (ConversationContext, error) {
 // resets to idle.
 const IdleTimeout = 10 * time.Minute
 
+// BookingTimeout is how long a booking may stay in the booking state before
+// it is moved to idle for reconciliation.
+const BookingTimeout = 5 * time.Minute
+
 // IsTimedOut reports whether a collecting conversation has been idle too long.
 func IsTimedOut(state State, lastPromptAt time.Time, now time.Time) bool {
 	if !state.IsCollecting() {

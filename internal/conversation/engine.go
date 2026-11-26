@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/ankitnegi-dev/Sahayak/internal/conversation/replies"
@@ -71,7 +72,6 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 	var state State
 	var needsBooking bool
 	var bookingDeepLink string
-	var bookingErr error
 
 	err := e.store.WithTx(ctx, func(q *store.Queries) error {
 		// Load or create conversation.
@@ -94,6 +94,23 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		// Timeout check for collecting states.
 		if IsTimedOut(State(convo.State), cc.LastPromptAt, now) {
 			convo.State = string(StateIdle)
+			cc = ConversationContext{}
+		}
+
+		// Booking timeout: if a booking has been pending too long, move to idle
+		// for reconciliation. The order stays in its current state (confirmed
+		// or booked) and Phase 9 reconciliation will handle it.
+		if State(convo.State) == StateBooking && !cc.LastPromptAt.IsZero() && now.Sub(cc.LastPromptAt) > BookingTimeout {
+			convo.State = string(StateIdle)
+			if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+				Actor:      userID,
+				Action:     "booking_timeout_needs_reconcile",
+				EntityType: pgtypeText("conversation"),
+				EntityID:   pgtypeText(userID),
+				Details:    []byte("{}"),
+			}); auditErr != nil {
+				return fmt.Errorf("append audit: %w", auditErr)
+			}
 			cc = ConversationContext{}
 		}
 
@@ -152,13 +169,15 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 				if err != nil {
 					return fmt.Errorf("conversation: persist: %w", err)
 				}
-				_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
+				if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
 					Actor:      userID,
 					Action:     "clarify_place",
 					EntityType: pgtypeText("conversation"),
 					EntityID:   pgtypeText(userID),
 					Details:    []byte("{}"),
-				})
+				}); auditErr != nil {
+					return fmt.Errorf("append audit: %w", auditErr)
+				}
 				return nil
 			}
 		}
@@ -192,13 +211,15 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 				if err != nil {
 					return fmt.Errorf("conversation: persist: %w", err)
 				}
-				_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
+				if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
 					Actor:      userID,
 					Action:     "clarify_place",
 					EntityType: pgtypeText("conversation"),
 					EntityID:   pgtypeText(userID),
 					Details:    []byte("{}"),
-				})
+				}); auditErr != nil {
+					return fmt.Errorf("append audit: %w", auditErr)
+				}
 				return nil
 			}
 		}
@@ -212,35 +233,81 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		nextState = state
 		replyText = ""
 
+		// "haan" while booking: booking in progress.
+		if state == StateBooking && intent.Action == llm.ActionConfirm {
+			nextState = StateBooking
+			replyText = replies.RenderBookingInProgress(lang)
+		}
+
+		// From error state, next message starts fresh.
+		if state == StateError {
+			state = StateIdle
+			cc = ConversationContext{}
+		}
+
 		// Handle confirm from awaiting_confirmation: this is the ONLY path
 		// that leads to booking. An explicit "haan" is required.
-		if state == StateAwaitingConfirmation && intent.Action == llm.ActionConfirm {
-			// Generate request ID if not already set.
-			if cc.RequestID == "" {
-				cc.RequestID = newRequestID()
-			}
-			nextState = StateBooking
-			// Create order (confirmed) in this transaction.
-			_, dbErr := q.CreateOrder(ctx, store.CreateOrderParams{
-				UserID:         pgtypeUUID(userID),
-				Type:           "ride",
-				Status:         "confirmed",
-				Pickup:         pgtypeText(cc.Pickup),
-				DropLocation:   pgtypeText(cc.Drop),
-				AmountPaise:    cc.FarePaise,
-				IdempotencyKey: "booking:" + cc.RequestID,
-			})
-			if dbErr != nil && !errors.Is(dbErr, store.ErrDuplicate) {
+		if state == StateAwaitingConfirmation && intent.Action == llm.ActionConfirm && replyText == "" {
+			// Safety check.
+			if err := e.safety.Check(ctx, SafetyRequest{
+				UserID: userID,
+				Pickup: cc.Pickup,
+				Drop:   cc.Drop,
+			}); err != nil {
 				nextState = StateError
 				replyText = replies.RenderBookingFailed(lang)
-			} else if errors.Is(dbErr, store.ErrDuplicate) {
-				// Already booked for this request.
-				nextState = StateActiveRide
-				replyText = replies.RenderBooked(lang, "https://fake/cab")
+				cc.RequestID = ""
 			} else {
-				// Order created. Booking will happen in phase 2.
-				needsBooking = true
-				replyText = "" // will be set after booking
+				// Generate request ID if not already set.
+				if cc.RequestID == "" {
+					cc.RequestID = newRequestID()
+				}
+				idempotencyKey := "booking:" + cc.RequestID
+
+				// Create order (confirmed) in this transaction.
+				_, dbErr := q.CreateOrder(ctx, store.CreateOrderParams{
+					UserID:         pgtypeUUID(userID),
+					Type:           "ride",
+					Status:         "confirmed",
+					Pickup:         pgtypeText(cc.Pickup),
+					DropLocation:   pgtypeText(cc.Drop),
+					AmountPaise:    cc.FarePaise,
+					IdempotencyKey: idempotencyKey,
+				})
+				if dbErr != nil && !errors.Is(dbErr, store.ErrDuplicate) {
+					nextState = StateError
+					replyText = replies.RenderBookingFailed(lang)
+					cc.RequestID = ""
+				} else if errors.Is(dbErr, store.ErrDuplicate) {
+					// Already booked for this request. Look up the existing order
+					// and respond from its real status.
+					existingOrder, lookupErr := q.GetOrderByUserAndIdempotencyKey(ctx, store.GetOrderByUserAndIdempotencyKeyParams{
+						UserID:         pgtypeUUID(userID),
+						IdempotencyKey: idempotencyKey,
+					})
+					if lookupErr == nil {
+						switch existingOrder.Status {
+						case "booked", "completed":
+							nextState = StateActiveRide
+							replyText = replies.RenderBooked(lang, "https://example.com/ride")
+						case "failed":
+							nextState = StateError
+							replyText = replies.RenderBookingFailed(lang)
+						default:
+							nextState = StateBooking
+							replyText = replies.RenderBookingInProgress(lang)
+						}
+					} else {
+						nextState = StateError
+						replyText = replies.RenderBookingFailed(lang)
+					}
+					cc.RequestID = ""
+				} else {
+					// Order created. Booking will happen in phase 2.
+					nextState = StateBooking
+					needsBooking = true
+					replyText = "" // will be set after booking
+				}
 			}
 		}
 
@@ -251,11 +318,38 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 			cc = ConversationContext{}
 		}
 
-		// Handle cancel from any state.
+		// Handle cancel. Only a plain reset in idle, awaiting_pickup,
+		// awaiting_drop and awaiting_confirmation. In booking and
+		// active_ride, cancel does NOT reset the conversation.
 		if intent.Action == llm.ActionCancel {
-			nextState = StateCancelled
-			replyText = replies.RenderCancelled(lang)
-			cc = ConversationContext{}
+			if state == StateBooking || state == StateActiveRide {
+				// Do not reset. Reply honestly.
+				if state == StateBooking {
+					replyText = replies.RenderCancelDuringBooking(lang)
+				} else {
+					replyText = replies.RenderCancelDuringRide(lang)
+				}
+				nextState = state
+				// Append audit row.
+				if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+					Actor:      userID,
+					Action:     "cancel_requested_during_booking",
+					EntityType: pgtypeText("conversation"),
+					EntityID:   pgtypeText(userID),
+					Details:    []byte("{}"),
+				}); auditErr != nil {
+					return fmt.Errorf("append audit: %w", auditErr)
+				}
+				// Only call Booker.Cancel from active_ride.
+				if state == StateActiveRide && e.booker != nil {
+					_ = e.booker.Cancel(ctx, "")
+				}
+			} else {
+				nextState = StateCancelled
+				replyText = replies.RenderCancelled(lang)
+				cc = ConversationContext{}
+				cc.RequestID = ""
+			}
 		}
 
 		// Handle confirm with nothing pending.
@@ -321,13 +415,15 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 			"intent": string(intent.Action),
 			"state":  nextState,
 		})
-		_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
+		if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
 			Actor:      userID,
 			Action:     "message_handled",
 			EntityType: pgtypeText("conversation"),
 			EntityID:   pgtypeText(userID),
 			Details:    details,
-		})
+		}); auditErr != nil {
+			return fmt.Errorf("append audit: %w", auditErr)
+		}
 
 		reply = Reply{Text: replyText}
 		return nil
@@ -339,107 +435,153 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 
 	// Phase 2: booking (outside transaction).
 	if needsBooking {
-		result, err := e.booker.Book(ctx, BookingRequest{
+		idempotencyKey := "booking:" + cc.RequestID
+
+		// Call Booker with timeout.
+		bookCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+
+		result, err := e.booker.Book(bookCtx, BookingRequest{
 			UserID:         userID,
 			Pickup:         cc.Pickup,
 			Drop:           cc.Drop,
-			IdempotencyKey: "booking:" + cc.RequestID,
+			IdempotencyKey: idempotencyKey,
 		})
+
 		if err != nil {
-			// Definite failure: update order to failed.
-			bookingErr = err
-			replyText := replies.RenderBookingFailed(lang)
-			// Update in second transaction.
-			err2 := e.store.WithTx(ctx, func(q *store.Queries) error {
-				// Find the order by idempotency key.
-				order, err := q.GetOrderByUserAndIdempotencyKey(ctx, store.GetOrderByUserAndIdempotencyKeyParams{
-					UserID:         pgtypeUUID(userID),
-					IdempotencyKey: "booking:" + cc.RequestID,
-				})
-				if err != nil {
+			// Determine if this is a definite rejection or ambiguous.
+			isRejected := errors.Is(err, ErrBookingRejected)
+
+			if isRejected {
+				// Definite failure: mark order as failed.
+				err2 := e.store.WithTx(ctx, func(q *store.Queries) error {
+					order, err := q.GetOrderByUserAndIdempotencyKey(ctx, store.GetOrderByUserAndIdempotencyKeyParams{
+						UserID:         pgtypeUUID(userID),
+						IdempotencyKey: idempotencyKey,
+					})
+					if err != nil {
+						return err
+					}
+					if err := q.UpdateOrderStatus(ctx, store.UpdateOrderStatusParams{
+						ID:     order.ID,
+						Status: "failed",
+					}); err != nil {
+						return err
+					}
+					_, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+						Actor:      userID,
+						Action:     "booking_failed",
+						EntityType: pgtypeText("order"),
+						EntityID:   pgtypeText(uuidToString(order.ID)),
+						Details:    []byte("{}"),
+					})
+					if auditErr != nil {
+						return fmt.Errorf("append audit: %w", auditErr)
+					}
+					// Update conversation state to error.
+					convo, err := q.GetConversationForUpdate(ctx, pgtypeUUID(userID))
+					if err != nil {
+						return err
+					}
+					convo.State = string(StateError)
+					cc.RequestID = ""
+					convo.Context, _ = cc.Marshal()
+					_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
+						UserID:  pgtypeUUID(userID),
+						State:   convo.State,
+						Context: convo.Context,
+					})
 					return err
-				}
-				if err := q.UpdateOrderStatus(ctx, store.UpdateOrderStatusParams{
-					ID:     order.ID,
-					Status: "failed",
-				}); err != nil {
-					return err
-				}
-				_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
-					Actor:      userID,
-					Action:     "booking_failed",
-					EntityType: pgtypeText("order"),
-					EntityID:   pgtypeText(uuidToString(order.ID)),
-					Details:    []byte("{}"),
 				})
-				return nil
-			})
-			if err2 != nil {
-				// Ambiguous: order stays in confirmed for reconciliation.
-				// Log but don't fail the request.
+				if err2 != nil {
+					// Log but don't fail the request.
+					slog.Error("mark failed transaction", "error", err2, "user_id", userID)
+				}
+				reply = Reply{Text: replies.RenderBookingFailed(lang)}
+			} else {
+				// Ambiguous (timeout, network, unknown): order stays confirmed.
+				// Audit "booking_outcome_unknown".
+				err2 := e.store.WithTx(ctx, func(q *store.Queries) error {
+					order, err := q.GetOrderByUserAndIdempotencyKey(ctx, store.GetOrderByUserAndIdempotencyKeyParams{
+						UserID:         pgtypeUUID(userID),
+						IdempotencyKey: idempotencyKey,
+					})
+					if err != nil {
+						return err
+					}
+					_, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+						Actor:      userID,
+						Action:     "booking_outcome_unknown",
+						EntityType: pgtypeText("order"),
+						EntityID:   pgtypeText(uuidToString(order.ID)),
+						Details:    []byte("{}"),
+					})
+					if auditErr != nil {
+						return fmt.Errorf("append audit: %w", auditErr)
+					}
+					// State stays booking.
+					return nil
+				})
+				if err2 != nil {
+					slog.Error("audit unknown outcome", "error", err2, "user_id", userID)
+				}
+				reply = Reply{Text: replies.RenderBookingBeingChecked(lang)}
 			}
-			// Update conversation state to error.
-			err3 := e.store.WithTx(ctx, func(q *store.Queries) error {
-				convo, err := q.GetConversationForUpdate(ctx, pgtypeUUID(userID))
-				if err != nil {
-					return err
-				}
-				convo.State = string(StateError)
-				cc = ConversationContext{}
-				cc.RequestID = ""
-				convo.Context, _ = cc.Marshal()
-				_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
-					UserID:  pgtypeUUID(userID),
-					State:   convo.State,
-					Context: convo.Context,
-				})
-				return err
-			})
-			_ = err3
-			reply = Reply{Text: replyText}
-			_ = bookingErr
 		} else {
-			// Success: update order to booked.
+			// Success: update order to booked with retries.
 			bookingDeepLink = result.DeepLink
-			err2 := e.store.WithTx(ctx, func(q *store.Queries) error {
-				order, err := q.GetOrderByUserAndIdempotencyKey(ctx, store.GetOrderByUserAndIdempotencyKeyParams{
-					UserID:         pgtypeUUID(userID),
-					IdempotencyKey: "booking:" + cc.RequestID,
-				})
-				if err != nil {
-					return err
+			var updateErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				if attempt > 0 {
+					time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
 				}
-				if err := q.UpdateOrderStatus(ctx, store.UpdateOrderStatusParams{
-					ID:     order.ID,
-					Status: "booked",
-				}); err != nil {
+				updateErr = e.store.WithTx(ctx, func(q *store.Queries) error {
+					order, err := q.GetOrderByUserAndIdempotencyKey(ctx, store.GetOrderByUserAndIdempotencyKeyParams{
+						UserID:         pgtypeUUID(userID),
+						IdempotencyKey: idempotencyKey,
+					})
+					if err != nil {
+						return err
+					}
+					if err := q.UpdateOrderStatus(ctx, store.UpdateOrderStatusParams{
+						ID:     order.ID,
+						Status: "booked",
+					}); err != nil {
+						return err
+					}
+					_, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+						Actor:      userID,
+						Action:     "booking_succeeded",
+						EntityType: pgtypeText("order"),
+						EntityID:   pgtypeText(uuidToString(order.ID)),
+						Details:    []byte("{}"),
+					})
+					if auditErr != nil {
+						return fmt.Errorf("append audit: %w", auditErr)
+					}
+					// Update conversation state to active_ride.
+					convo, err := q.GetConversationForUpdate(ctx, pgtypeUUID(userID))
+					if err != nil {
+						return err
+					}
+					convo.State = string(StateActiveRide)
+					cc.RequestID = ""
+					convo.Context, _ = cc.Marshal()
+					_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
+						UserID:  pgtypeUUID(userID),
+						State:   convo.State,
+						Context: convo.Context,
+					})
 					return err
-				}
-				_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
-					Actor:      userID,
-					Action:     "booking_succeeded",
-					EntityType: pgtypeText("order"),
-					EntityID:   pgtypeText(uuidToString(order.ID)),
-					Details:    []byte("{}"),
 				})
-				// Update conversation state to active_ride.
-				convo, err := q.GetConversationForUpdate(ctx, pgtypeUUID(userID))
-				if err != nil {
-					return err
+				if updateErr == nil {
+					break
 				}
-				convo.State = string(StateActiveRide)
-				cc.RequestID = ""
-				convo.Context, _ = cc.Marshal()
-				_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
-					UserID:  pgtypeUUID(userID),
-					State:   convo.State,
-					Context: convo.Context,
-				})
-				return err
-			})
-			if err2 != nil {
-				// Ambiguous: order might be booked but state not updated.
-				// Log but don't fail.
+			}
+			if updateErr != nil {
+				// Failed after retries: log at error level, leave order confirmed.
+				slog.Error("mark booked failed after retries", "error", updateErr, "user_id", userID)
+				// Add booking timeout check later.
 			}
 			reply = Reply{Text: replies.RenderBooked(lang, bookingDeepLink)}
 		}
@@ -501,12 +643,14 @@ func (e *Engine) persist(ctx context.Context, q *store.Queries, userID string, c
 		"intent": string(intent.Action),
 		"state":  state,
 	})
-	_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
+	if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
 		Actor:      userID,
 		Action:     action,
 		EntityType: pgtypeText("conversation"),
 		EntityID:   pgtypeText(userID),
 		Details:    details,
-	})
+	}); auditErr != nil {
+		return fmt.Errorf("append audit: %w", auditErr)
+	}
 	return nil
 }

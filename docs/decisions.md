@@ -1,4 +1,4 @@
-# Architecture Decision Log
+﻿# Architecture Decision Log
 
 Every non-obvious choice goes here, written at the time it is made. The goal is
 that a future reader (including future me) understands *why*, not just *what*.
@@ -466,7 +466,6 @@ and fails the test unless it ends in `_test`. Integration tests read
 message rather than silently destroying data. The cost is that every test
 database must be named with a `_test` suffix.
 
----
 ---
 
 ## ADR-027: State machine as an explicit transition table

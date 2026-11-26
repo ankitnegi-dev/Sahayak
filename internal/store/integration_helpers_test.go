@@ -24,7 +24,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://parentbot:parentbot@localhost:5432/parentbot_test?sslmode=disable"
+		dsn = "postgres://parentbot:parentbot@127.0.0.1:5432/parentbot_test?sslmode=disable"
 	}
 
 	dbName, err := databaseName(dsn)

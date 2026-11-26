@@ -201,7 +201,7 @@ func TestIntegration_AuditLogRestrictedRole(t *testing.T) {
 	require.NoError(t, err)
 
 	// Connect as sahayak_app.
-	appPool, err := pgxpool.New(ctx, "postgres://sahayak_app:sahayak_app@localhost:5432/parentbot_test?sslmode=disable")
+	appPool, err := pgxpool.New(ctx, "postgres://sahayak_app:sahayak_app@127.0.0.1:5432/parentbot_test?sslmode=disable")
 	require.NoError(t, err)
 	defer appPool.Close()
 

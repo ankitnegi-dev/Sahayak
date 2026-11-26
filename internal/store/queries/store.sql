@@ -74,6 +74,7 @@ RETURNING user_id, state, context, updated_at;
 -- name: CreateOrder :one
 INSERT INTO orders (user_id, type, status, pickup, drop_location, amount_paise, provider, provider_ref, idempotency_key)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING id, user_id, type, status, pickup, drop_location, amount_paise, provider, provider_ref, idempotency_key, created_at, updated_at;
 
 -- name: GetOrder :one

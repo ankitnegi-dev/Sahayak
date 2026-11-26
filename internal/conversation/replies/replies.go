@@ -32,19 +32,23 @@ type Reply struct {
 
 // Templates holds all reply strings for one language.
 type Templates struct {
-	AskPickup        string
-	AskDrop          string
-	Confirm          string
-	Booked           string
-	Cancelled        string
-	Unknown          string
-	Help             string
-	ClarifyPlace     string
-	TooManyAttempts  string
-	Timeout          string
-	BookingFailed    string
-	NoPendingBooking string
-	AlreadyBooked    string
+	AskPickup           string
+	AskDrop             string
+	Confirm             string
+	Booked              string
+	Cancelled           string
+	Unknown             string
+	Help                string
+	ClarifyPlace        string
+	TooManyAttempts     string
+	Timeout             string
+	BookingFailed       string
+	NoPendingBooking    string
+	AlreadyBooked       string
+	BookingInProgress   string
+	CancelDuringBooking string
+	CancelDuringRide    string
+	BookingBeingChecked string
 }
 
 // For returns the template set for a language.
@@ -125,6 +129,26 @@ func RenderNoPendingBooking(lang Language) string {
 	return For(lang).NoPendingBooking
 }
 
+// RenderBookingInProgress returns the "booking in progress" message.
+func RenderBookingInProgress(lang Language) string {
+	return For(lang).BookingInProgress
+}
+
+// RenderCancelDuringBooking returns the "already being booked" message.
+func RenderCancelDuringBooking(lang Language) string {
+	return For(lang).CancelDuringBooking
+}
+
+// RenderCancelDuringRide returns the "ride already booked" message.
+func RenderCancelDuringRide(lang Language) string {
+	return For(lang).CancelDuringRide
+}
+
+// RenderBookingBeingChecked returns the "being checked" message.
+func RenderBookingBeingChecked(lang Language) string {
+	return For(lang).BookingBeingChecked
+}
+
 // FormatFare formats paise as rupees with two decimal places.
 func FormatFare(paise int64) string {
 	rupees := paise / 100
@@ -136,33 +160,41 @@ func FormatFare(paise int64) string {
 }
 
 var hindiTemplates = Templates{
-	AskPickup:        "Kahan se jaana hai?",
-	AskDrop:          "Kahan jaana hai?",
-	Confirm:          "Pickup: {pickup}\nDrop: {drop}\nEstimated fare: Rs. {fare}\nKya yeh sahi hai? Haan ya Nahi?",
-	Booked:           "Cab book ho gaya! Link: {link}",
-	Cancelled:        "Theek hai, cancel kar diya.",
-	Unknown:          "Samajh nahi aaya. Dobara boliye.",
-	Help:             "Main cab book kar sakta hoon. Boliye 'cab book karo' aur main madad karunga.",
-	ClarifyPlace:     "{place} kaunsa? Kripya address bataiye.",
-	TooManyAttempts:  "Main samajh nahi pa raha. Main aapke bete ko bata deta hoon.",
-	Timeout:          "Bahut der ho gayi. Dobara shuru karein.",
-	BookingFailed:    "Booking nahi ho payi. Kripya dobara try karein.",
-	NoPendingBooking: "Koi pending booking nahi hai.",
-	AlreadyBooked:    "Aapki ride already book hai.",
+	AskPickup:           "Kahan se jaana hai?",
+	AskDrop:             "Kahan jaana hai?",
+	Confirm:             "Pickup: {pickup}\nDrop: {drop}\nEstimated fare: Rs. {fare}\nKya yeh sahi hai? Haan ya Nahi?",
+	Booked:              "Cab book ho gaya! Link: {link}",
+	Cancelled:           "Theek hai, cancel kar diya.",
+	Unknown:             "Samajh nahi aaya. Dobara boliye.",
+	Help:                "Main cab book kar sakta hoon. Boliye 'cab book karo' aur main madad karunga.",
+	ClarifyPlace:        "{place} kaunsa? Kripya address bataiye.",
+	TooManyAttempts:     "Main samajh nahi pa raha. Main aapke bete ko bata deta hoon.",
+	Timeout:             "Bahut der ho gayi. Dobara shuru karein.",
+	BookingFailed:       "Booking nahi ho payi. Kripya dobara try karein.",
+	NoPendingBooking:    "Koi pending booking nahi hai.",
+	AlreadyBooked:       "Aapki ride already book hai.",
+	BookingInProgress:   "Booking chal rahi hai, ruko.",
+	CancelDuringBooking: "Booking chal rahi hai, cancel nahi ho sakta abhi.",
+	CancelDuringRide:    "Ride book ho chuki hai, cancel nahi ho sakta.",
+	BookingBeingChecked: "Ride check ho rahi hai, thoda wait karo.",
 }
 
 var englishTemplates = Templates{
-	AskPickup:        "Where should I pick you up from?",
-	AskDrop:          "Where do you want to go?",
-	Confirm:          "Pickup: {pickup}\nDrop: {drop}\nEstimated fare: Rs. {fare}\nIs this correct? Yes or No?",
-	Booked:           "Cab booked! Link: {link}",
-	Cancelled:        "Okay, cancelled.",
-	Unknown:          "I didn't understand. Please say that again.",
-	Help:             "I can book a cab for you. Say 'book a cab' and I'll help.",
-	ClarifyPlace:     "Which {place}? Please tell me the address.",
-	TooManyAttempts:  "I couldn't understand. I'll let your child know.",
-	Timeout:          "It's been a while. Let's start over.",
-	BookingFailed:    "Booking failed. Please try again.",
-	NoPendingBooking: "No pending booking.",
-	AlreadyBooked:    "Your ride is already booked.",
+	AskPickup:           "Where should I pick you up from?",
+	AskDrop:             "Where do you want to go?",
+	Confirm:             "Pickup: {pickup}\nDrop: {drop}\nEstimated fare: Rs. {fare}\nIs this correct? Yes or No?",
+	Booked:              "Cab booked! Link: {link}",
+	Cancelled:           "Okay, cancelled.",
+	Unknown:             "I didn't understand. Please say that again.",
+	Help:                "I can book a cab for you. Say 'book a cab' and I'll help.",
+	ClarifyPlace:        "Which {place}? Please tell me the address.",
+	TooManyAttempts:     "I couldn't understand. I'll let your child know.",
+	Timeout:             "It's been a while. Let's start over.",
+	BookingFailed:       "Booking failed. Please try again.",
+	NoPendingBooking:    "No pending booking.",
+	AlreadyBooked:       "Your ride is already booked.",
+	BookingInProgress:   "Booking in progress, please wait.",
+	CancelDuringBooking: "Booking in progress, cannot cancel now.",
+	CancelDuringRide:    "Ride already booked, cannot cancel.",
+	BookingBeingChecked: "Ride is being checked, please wait.",
 }

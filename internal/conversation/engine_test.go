@@ -4,7 +4,6 @@ package conversation
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -45,7 +44,7 @@ func cleanDB(t *testing.T, pool *pgxpool.Pool) {
 func testEngine(t *testing.T, pool *pgxpool.Pool, extractor llm.Extractor) *Engine {
 	t.Helper()
 	s := store.NewStore(pool)
-	booker := FakeBooker{DeepLink: "https://fake/cab"}
+	booker := &FakeBooker{DeepLink: "https://fake/cab"}
 	return NewEngine(s, extractor, booker, PermissiveSafety{}, nil)
 }
 
@@ -186,7 +185,7 @@ func TestEngine_TimeoutRejected(t *testing.T) {
 	})
 
 	clock := &fakeClock{now: time.Now()}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, FakeBooker{}, PermissiveSafety{}, clock)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, clock)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 
@@ -372,7 +371,7 @@ func TestEngine_SilenceTimeout(t *testing.T) {
 	})
 
 	clock := &fakeClock{now: time.Now()}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, FakeBooker{}, PermissiveSafety{}, clock)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, clock)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 
@@ -461,7 +460,7 @@ func TestEngine_HaanAfterTimeout(t *testing.T) {
 	})
 
 	clock := &fakeClock{now: time.Now()}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, FakeBooker{}, PermissiveSafety{}, clock)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, clock)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 	clock.now = clock.now.Add(11 * time.Minute)
@@ -500,7 +499,7 @@ func TestEngine_SameRouteTwoDays(t *testing.T) {
 	require.Equal(t, 2, count, "same route on two different days must create two orders")
 }
 
-func TestEngine_BookerFailure(t *testing.T) {
+func TestEngine_BookerRejected(t *testing.T) {
 	pool := testPool(t)
 	cleanDB(t, pool)
 	ctx := context.Background()
@@ -510,7 +509,7 @@ func TestEngine_BookerFailure(t *testing.T) {
 		"mandir": "Temple Rd",
 	})
 
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, FakeBooker{Err: fmt.Errorf("provider down")}, PermissiveSafety{}, nil)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{Err: ErrBookingRejected}, PermissiveSafety{}, nil)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 	reply, err := engine.Handle(ctx, userID, "haan")
@@ -521,6 +520,43 @@ func TestEngine_BookerFailure(t *testing.T) {
 	var status string
 	pool.QueryRow(ctx, "SELECT status FROM orders WHERE user_id = $1", userID).Scan(&status)
 	require.Equal(t, "failed", status)
+}
+
+func TestEngine_BookerTimeout(t *testing.T) {
+	pool := testPool(t)
+	cleanDB(t, pool)
+	ctx := context.Background()
+
+	userID := testUser(t, pool, "+919812345678", map[string]string{
+		"ghar":   "123 Main St",
+		"mandir": "Temple Rd",
+	})
+
+	// A Booker that blocks until context is cancelled.
+	slow := &slowBooker{}
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, slow, PermissiveSafety{}, nil)
+
+	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
+	reply, err := engine.Handle(ctx, userID, "haan")
+	require.NoError(t, err)
+	require.Contains(t, reply.Text, "check ho rahi hai")
+
+	// Order should stay in "confirmed" (non-terminal, reconcilable).
+	var status string
+	pool.QueryRow(ctx, "SELECT status FROM orders WHERE user_id = $1", userID).Scan(&status)
+	require.Equal(t, "confirmed", status)
+}
+
+// slowBooker blocks until the context is cancelled.
+type slowBooker struct{}
+
+func (slowBooker) Book(ctx context.Context, req BookingRequest) (BookingResult, error) {
+	<-ctx.Done()
+	return BookingResult{}, ctx.Err()
+}
+
+func (slowBooker) Cancel(ctx context.Context, providerRef string) error {
+	return nil
 }
 
 func TestEngine_ConcurrencyExactlyOneOrder(t *testing.T) {
