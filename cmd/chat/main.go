@@ -162,6 +162,12 @@ func run() error {
 			fmt.Println("Kill switch: (not yet implemented)")
 			continue
 		}
+		if text == "/reset" {
+			pool.Exec(ctx, "UPDATE conversations SET state = 'idle', context = '{}' WHERE user_id = $1", userID)
+			pool.Exec(ctx, "DELETE FROM orders WHERE user_id = $1", userID)
+			fmt.Println("Conversation reset to idle.")
+			continue
+		}
 
 		reply, err := engine.Handle(ctx, userID, text)
 		if err != nil {

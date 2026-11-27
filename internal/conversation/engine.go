@@ -150,12 +150,37 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 
 		// Extract intent.
 		convoCtxJSON, _ := json.Marshal(cc)
-		intent, err = e.extractor.Extract(ctx, text, string(convoCtxJSON))
+		contextStr := fmt.Sprintf("state=%s %s", state, string(convoCtxJSON))
+		intent, err = e.extractor.Extract(ctx, text, contextStr)
 		if err != nil {
 			return fmt.Errorf("conversation: extract intent: %w", err)
 		}
 		if !isValidIntent(intent) {
 			intent = llm.Intent{Action: llm.ActionUnknown, Confidence: 0}
+		}
+
+		// One active ride at a time: a new booking during active_ride or
+		// booking is refused BEFORE place resolution or clarification.
+		if (state == StateActiveRide || state == StateBooking) && intent.Action == llm.ActionBookRide {
+			nextState = state
+			replyText = replies.RenderAlreadyBooked(lang)
+			convo.State = string(nextState)
+			cc.LastPromptAt = now
+			convo.Context, _ = cc.Marshal()
+			_, _ = q.UpsertConversation(ctx, store.UpsertConversationParams{
+				UserID:  pgtypeUUID(userID),
+				State:   convo.State,
+				Context: convo.Context,
+			})
+			_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
+				Actor:      userID,
+				Action:     "message_handled",
+				EntityType: pgtypeText("conversation"),
+				EntityID:   pgtypeText(userID),
+				Details:    []byte("{}"),
+			})
+			reply = Reply{Text: replyText}
+			return nil
 		}
 
 		// Reset context on a new booking request from an active or terminal state.
@@ -474,12 +499,7 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 			replyText = replies.RenderUnknown(lang)
 		}
 
-		// One active ride at a time: a new booking during active_ride or
-		// booking is refused.
-		if (state == StateActiveRide || state == StateBooking) && intent.Action == llm.ActionBookRide && replyText == "" {
-			nextState = state
-			replyText = replies.RenderAlreadyBooked(lang)
-		}
+		// Active ride check already handled above (before place resolution).
 
 		// Handle awaiting_approval state.
 		if state == StateAwaitingApproval && replyText == "" {
