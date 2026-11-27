@@ -45,7 +45,7 @@ func testEngine(t *testing.T, pool *pgxpool.Pool, extractor llm.Extractor) *Engi
 	t.Helper()
 	s := store.NewStore(pool)
 	booker := &FakeBooker{}
-	return NewEngine(s, extractor, booker, PermissiveSafety{}, nil)
+	return NewEngine(s, extractor, booker, PermissiveSafety{}, &FakeNotifier{}, nil)
 }
 
 // testUser creates a user with saved places and returns the user ID.
@@ -185,7 +185,7 @@ func TestEngine_TimeoutRejected(t *testing.T) {
 	})
 
 	clock := &fakeClock{now: time.Now()}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, clock)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, &FakeNotifier{}, clock)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 
@@ -371,7 +371,7 @@ func TestEngine_SilenceTimeout(t *testing.T) {
 	})
 
 	clock := &fakeClock{now: time.Now()}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, clock)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, &FakeNotifier{}, clock)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 
@@ -460,7 +460,7 @@ func TestEngine_HaanAfterTimeout(t *testing.T) {
 	})
 
 	clock := &fakeClock{now: time.Now()}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, clock)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, &FakeNotifier{}, clock)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 	clock.now = clock.now.Add(11 * time.Minute)
@@ -485,7 +485,7 @@ func TestEngine_SameRouteTwoDays(t *testing.T) {
 	})
 
 	clock := &fakeClock{now: time.Now()}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, clock)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, &FakeNotifier{}, clock)
 
 	// Day 1.
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
@@ -513,7 +513,7 @@ func TestEngine_BookerRejected(t *testing.T) {
 		"mandir": "Temple Rd",
 	})
 
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{Err: ErrBookingRejected}, PermissiveSafety{}, nil)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{Err: ErrBookingRejected}, PermissiveSafety{}, &FakeNotifier{}, nil)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 	reply, err := engine.Handle(ctx, userID, "haan")
@@ -538,7 +538,7 @@ func TestEngine_BookerTimeout(t *testing.T) {
 
 	// A Booker that blocks until context is cancelled.
 	slow := &slowBooker{}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, slow, PermissiveSafety{}, nil)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, slow, PermissiveSafety{}, &FakeNotifier{}, nil)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 	reply, err := engine.Handle(ctx, userID, "haan")
@@ -746,7 +746,7 @@ func TestEngine_SecondHaanWhileBooking(t *testing.T) {
 	})
 
 	booker := &FakeBooker{}
-	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, booker, PermissiveSafety{}, nil)
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, booker, PermissiveSafety{}, &FakeNotifier{}, nil)
 
 	engine.Handle(ctx, userID, "ghar se mandir jaana hai")
 	engine.Handle(ctx, userID, "haan")
@@ -881,7 +881,7 @@ func TestEngine_RequestIDClearedOnTerminalPaths(t *testing.T) {
 		"mandir": "Temple Rd",
 	})
 	clock := &fakeClock{now: time.Now()}
-	engine3 := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, clock)
+	engine3 := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, PermissiveSafety{}, &FakeNotifier{}, clock)
 	engine3.Handle(ctx, userID3, "ghar se mandir jaana hai")
 	clock.now = clock.now.Add(11 * time.Minute)
 	engine3.Handle(ctx, userID3, "haan")

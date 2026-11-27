@@ -14,6 +14,7 @@ import (
 	"github.com/ankitnegi-dev/Sahayak/internal/llm"
 	"github.com/ankitnegi-dev/Sahayak/internal/store"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Reply is what the engine returns to the caller.
@@ -28,22 +29,27 @@ type Engine struct {
 	extractor llm.Extractor
 	booker    Booker
 	safety    SafetyChecker
+	notifier  Notifier
 	clock     Clock
 }
 
 // NewEngine returns an Engine with the given collaborators.
-func NewEngine(s *store.Store, extractor llm.Extractor, booker Booker, safety SafetyChecker, clock Clock) *Engine {
+func NewEngine(s *store.Store, extractor llm.Extractor, booker Booker, safety SafetyChecker, notifier Notifier, clock Clock) *Engine {
 	if clock == nil {
 		clock = RealClock{}
 	}
 	if safety == nil {
 		safety = PermissiveSafety{}
 	}
+	if notifier == nil {
+		notifier = &FakeNotifier{}
+	}
 	return &Engine{
 		store:     s,
 		extractor: extractor,
 		booker:    booker,
 		safety:    safety,
+		notifier:  notifier,
 		clock:     clock,
 	}
 }
@@ -430,6 +436,20 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 			replyText = replies.RenderAlreadyBooked(lang)
 		}
 
+		// Handle awaiting_approval state.
+		if state == StateAwaitingApproval && replyText == "" {
+			// Check expiry (15 minutes).
+			if now.Sub(cc.LastPromptAt) > 15*time.Minute {
+				nextState = StateIdle
+				replyText = replies.RenderTimeout(lang)
+				cc = ConversationContext{}
+				cc.RequestID = ""
+			} else {
+				nextState = StateAwaitingApproval
+				replyText = replies.RenderApprovalNeeded(lang)
+			}
+		}
+
 		// Handle book_ride intent (collecting places).
 		if intent.Action == llm.ActionBookRide && replyText == "" {
 			// A new booking from an active or terminal state starts fresh.
@@ -447,6 +467,149 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 			// Generate request ID when entering awaiting_confirmation.
 			if nextState == StateAwaitingConfirmation && cc.RequestID == "" {
 				cc.RequestID = newRequestID()
+			}
+
+			// Safety check when request becomes complete (both places resolved).
+			// This runs BEFORE showing the confirmation message.
+			if nextState == StateAwaitingConfirmation {
+				decision := e.safety.Check(ctx, SafetyRequest{
+					UserID:       userID,
+					Pickup:       cc.Pickup,
+					Drop:         cc.Drop,
+					IsSavedPlace: cc.DropPlaceID != "",
+					FarePaise:    cc.FarePaise,
+					Now:          now,
+				})
+				switch decision.Type {
+				case SafetyDeny:
+					nextState = StateIdle
+					replyText = replies.RenderSafetyDeny(lang, decision.Reason)
+					cc.RequestID = ""
+					if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+						Actor:      userID,
+						Action:     "safety_deny",
+						EntityType: pgtypeText("conversation"),
+						EntityID:   pgtypeText(userID),
+						Details:    []byte(`{"reason":"` + decision.Reason + `"}`),
+					}); auditErr != nil {
+						return fmt.Errorf("append audit: %w", auditErr)
+					}
+				case SafetyNeedsApproval:
+					// Create approval row.
+					childID := ActiveFamilyChild(ctx, q, userID)
+					if childID == "" {
+						nextState = StateError
+						replyText = replies.RenderSafetyDeny(lang, "no_approver")
+						cc.RequestID = ""
+					} else {
+						snapshot, _ := json.Marshal(map[string]any{
+							"pickup":     cc.Pickup,
+							"drop":       cc.Drop,
+							"request_id": cc.RequestID,
+						})
+						shortCode := newRequestID()[:6]
+						expiresAt := now.Add(15 * time.Minute)
+						_, err := q.CreateApproval(ctx, store.CreateApprovalParams{
+							UserID:        pgtypeUUID(userID),
+							ChildID:       pgtypeUUID(childID),
+							OrderSnapshot: snapshot,
+							Reason:        decision.Reason,
+							ShortCode:     shortCode,
+							ExpiresAt:     pgtype.Timestamptz{Time: expiresAt, Valid: true},
+						})
+						if err != nil {
+							nextState = StateError
+							replyText = replies.RenderBookingFailed(lang)
+							cc.RequestID = ""
+						} else {
+							nextState = StateAwaitingApproval
+							replyText = replies.RenderApprovalNeeded(lang)
+							if e.notifier != nil {
+								e.notifier.Notify(ctx, childID, "Approval needed: "+decision.Reason+" (code: "+shortCode+")")
+							}
+							if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+								Actor:      userID,
+								Action:     "safety_needs_approval",
+								EntityType: pgtypeText("conversation"),
+								EntityID:   pgtypeText(userID),
+								Details:    []byte(`{"reason":"` + decision.Reason + `","code":"` + shortCode + `"}`),
+							}); auditErr != nil {
+								return fmt.Errorf("append audit: %w", auditErr)
+							}
+						}
+					}
+				}
+			}
+
+			// Safety check when request becomes complete (both places resolved).
+			if nextState == StateAwaitingConfirmation {
+				decision := e.safety.Check(ctx, SafetyRequest{
+					UserID:       userID,
+					Pickup:       cc.Pickup,
+					Drop:         cc.Drop,
+					IsSavedPlace: cc.DropPlaceID != "",
+					FarePaise:    cc.FarePaise,
+					Now:          now,
+				})
+				switch decision.Type {
+				case SafetyDeny:
+					nextState = StateIdle
+					replyText = replies.RenderSafetyDeny(lang, decision.Reason)
+					cc.RequestID = ""
+					if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+						Actor:      userID,
+						Action:     "safety_deny",
+						EntityType: pgtypeText("conversation"),
+						EntityID:   pgtypeText(userID),
+						Details:    []byte(`{"reason":"` + decision.Reason + `"}`),
+					}); auditErr != nil {
+						return fmt.Errorf("append audit: %w", auditErr)
+					}
+				case SafetyNeedsApproval:
+					// Create approval row.
+					childID := ActiveFamilyChild(ctx, q, userID)
+					if childID == "" {
+						nextState = StateError
+						replyText = replies.RenderSafetyDeny(lang, "no_approver")
+						cc.RequestID = ""
+					} else {
+						snapshot, _ := json.Marshal(map[string]any{
+							"pickup":     cc.Pickup,
+							"drop":       cc.Drop,
+							"request_id": cc.RequestID,
+						})
+						shortCode := newRequestID()[:6]
+						expiresAt := now.Add(15 * time.Minute)
+						_, err := q.CreateApproval(ctx, store.CreateApprovalParams{
+							UserID:        pgtypeUUID(userID),
+							ChildID:       pgtypeUUID(childID),
+							OrderSnapshot: snapshot,
+							Reason:        decision.Reason,
+							ShortCode:     shortCode,
+							ExpiresAt:     pgtype.Timestamptz{Time: expiresAt, Valid: true},
+						})
+						if err != nil {
+							nextState = StateError
+							replyText = replies.RenderBookingFailed(lang)
+							cc.RequestID = ""
+						} else {
+							nextState = StateAwaitingApproval
+							replyText = replies.RenderApprovalNeeded(lang)
+							if e.notifier != nil {
+								e.notifier.Notify(ctx, childID, "Approval needed: "+decision.Reason+" (code: "+shortCode+")")
+							}
+							if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+								Actor:      userID,
+								Action:     "safety_needs_approval",
+								EntityType: pgtypeText("conversation"),
+								EntityID:   pgtypeText(userID),
+								Details:    []byte(`{"reason":"` + decision.Reason + `","code":"` + shortCode + `"}`),
+							}); auditErr != nil {
+								return fmt.Errorf("append audit: %w", auditErr)
+							}
+						}
+					}
+				}
 			}
 		}
 

@@ -52,6 +52,11 @@ var Transitions = TransitionTable{
 		EventCancelled:   StateCancelled,
 		EventTimeout:     StateIdle,
 	},
+	StateAwaitingApproval: {
+		EventUserMessage: StateAwaitingApproval,
+		EventTimeout:     StateIdle,
+		EventCancelled:   StateCancelled,
+	},
 	StateBooking: {
 		EventBookingSucceeded: StateActiveRide,
 		EventBookingFailed:    StateError,
