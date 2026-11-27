@@ -691,3 +691,38 @@ creates the order. Deny always wins over a stale approval.
 **Consequences:** A booking that was safe when confirmed but is unsafe when
 booked is denied. The parent sees a "not allowed" message instead of a
 booking.
+
+---
+
+## ADR-039: Phase 6 approval flow implementation
+
+**Status:** Accepted
+
+**Context:** Phase 6 initially overstated what was built. The approval flow
+was not implemented. This ADR documents the actual implementation.
+
+**Decision:**
+
+1. Notifier interface: sends a message to a user. FakeNotifier records
+   messages for tests. Real WhatsApp sending comes later.
+
+2. Family link verification: only a user with an ACTIVE family_links row
+   to the parent can approve or deny. The parent's own messages can never
+   approve. Enforced in Engine.DecideApproval.
+
+3. Request snapshot: the approval row stores pickup, drop and request_id.
+   At booking time, if the request no longer matches the snapshot, the
+   approval is void.
+
+4. Expiry: approvals expire after 15 minutes (injectable clock). The
+   conversation returns to idle.
+
+5. Check order: safety runs when the request becomes complete (before
+   showing confirmation). NeedsApproval creates an approval row, notifies
+   the child, moves to awaiting_approval. Approved moves to
+   awaiting_confirmation (still needs "haan"). Safety re-runs at booking
+   time. Deny wins over stale approval.
+
+**Consequences:** No booking happens without passing both safety checks and
+the parent's explicit confirmation. The approval flow is testable with
+FakeNotifier and real Postgres.
