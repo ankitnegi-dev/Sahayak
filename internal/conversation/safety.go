@@ -13,6 +13,9 @@ type SafetyRequest struct {
 	IsSavedPlace bool
 	FarePaise    int64
 	Now          time.Time
+	RequestID    string
+	// Approval is the approved approval for this request, if any.
+	Approval *Approval
 }
 
 // SafetyDecision is the result of a safety check.

@@ -268,6 +268,34 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		// that leads to booking. An explicit "haan" is required.
 		if state == StateAwaitingConfirmation && intent.Action == llm.ActionConfirm && replyText == "" {
 			// Safety re-check at booking time.
+			// Look up the latest approval for this user.
+			var approval *Approval
+			row, err := q.GetLatestApprovalByUser(ctx, pgtypeUUID(userID))
+			if err == nil && row.Status == "approved" {
+				a := &Approval{
+					ID:        uuidToString(row.ID),
+					UserID:    uuidToString(row.UserID),
+					ChildID:   uuidToString(row.ChildID),
+					Reason:    row.Reason,
+					Status:    row.Status,
+					ShortCode: row.ShortCode,
+					ExpiresAt: row.ExpiresAt.Time,
+				}
+				var snapshot map[string]any
+				if err := json.Unmarshal(row.OrderSnapshot, &snapshot); err == nil {
+					if v, ok := snapshot["pickup"].(string); ok {
+						a.Pickup = v
+					}
+					if v, ok := snapshot["drop"].(string); ok {
+						a.Drop = v
+					}
+					if v, ok := snapshot["request_id"].(string); ok {
+						a.RequestID = v
+					}
+				}
+				approval = a
+			}
+
 			decision := e.safety.Check(ctx, SafetyRequest{
 				UserID:       userID,
 				Pickup:       cc.Pickup,
@@ -275,6 +303,8 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 				IsSavedPlace: cc.DropPlaceID != "",
 				FarePaise:    cc.FarePaise,
 				Now:          now,
+				RequestID:    cc.RequestID,
+				Approval:     approval,
 			})
 			switch decision.Type {
 			case SafetyDeny:
@@ -433,13 +463,13 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		}
 
 		// Handle help.
-		if intent.Action == llm.ActionHelp {
+		if intent.Action == llm.ActionHelp && state != StateAwaitingApproval {
 			nextState = state
 			replyText = replies.RenderHelp(lang)
 		}
 
 		// Handle unknown.
-		if intent.Action == llm.ActionUnknown && replyText == "" {
+		if intent.Action == llm.ActionUnknown && replyText == "" && state != StateAwaitingApproval {
 			nextState = state
 			replyText = replies.RenderUnknown(lang)
 		}
@@ -513,6 +543,11 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 					// Create approval row.
 					childID := ActiveFamilyChild(ctx, q, userID)
 					if childID == "" {
+						// Debug: log family links
+						links, _ := q.ListFamilyLinks(ctx, pgtypeUUID(userID))
+						for _, l := range links {
+							fmt.Printf("DEBUG: link child=%s parent=%s status=%s\n", uuidToString(l.ChildID), uuidToString(l.ParentID), l.Status)
+						}
 						nextState = StateError
 						replyText = replies.RenderSafetyDeny(lang, "no_approver")
 						cc.RequestID = ""

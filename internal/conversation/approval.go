@@ -33,14 +33,34 @@ func (e *Engine) DecideApproval(ctx context.Context, actorUserID, code string, a
 
 		row, err := q.GetApprovalByCode(ctx, code)
 		if err != nil {
+			// Debug: list all approvals
+			approvals, _ := q.ListPendingApprovalsForChild(ctx, pgtypeUUID(""))
+			fmt.Printf("DEBUG: looking for code %q, found %d approvals\n", code, len(approvals))
+			for _, a := range approvals {
+				fmt.Printf("  code=%q status=%s\n", a.ShortCode, a.Status)
+			}
 			return fmt.Errorf("approval not found: %w", err)
 		}
 
 		// Check expiry.
 		if row.Status == "pending" && row.ExpiresAt.Time.Before(now) {
-			_ = q.UpdateApprovalStatus(ctx, store.UpdateApprovalStatusParams{
-				ID:     row.ID,
-				Status: "expired",
+			// Update in a committed transaction before returning error.
+			e.store.WithTx(ctx, func(q *store.Queries) error {
+				_ = q.UpdateApprovalStatus(ctx, store.UpdateApprovalStatusParams{
+					ID:     row.ID,
+					Status: "expired",
+				})
+				convo, err := q.GetConversationForUpdate(ctx, row.UserID)
+				if err == nil && convo.UserID.Valid {
+					convo.State = string(StateIdle)
+					convo.Context, _ = (ConversationContext{}).Marshal()
+					q.UpsertConversation(ctx, store.UpsertConversationParams{
+						UserID:  row.UserID,
+						State:   convo.State,
+						Context: convo.Context,
+					})
+				}
+				return nil
 			})
 			return fmt.Errorf("approval expired")
 		}
@@ -71,11 +91,58 @@ func (e *Engine) DecideApproval(ctx context.Context, actorUserID, code string, a
 		if approve {
 			status = "approved"
 		}
+
+		// Update approval status.
 		if err := q.UpdateApprovalStatus(ctx, store.UpdateApprovalStatusParams{
 			ID:     row.ID,
 			Status: status,
 		}); err != nil {
 			return fmt.Errorf("update approval: %w", err)
+		}
+
+		// If approved, move the conversation back to awaiting_confirmation.
+		if approve {
+			convo, err := q.GetConversationForUpdate(ctx, row.UserID)
+			if err != nil {
+				return fmt.Errorf("load conversation: %w", err)
+			}
+			convo.State = string(StateAwaitingConfirmation)
+			// Update context with the snapshot data.
+			cc, _ := UnmarshalContext(convo.Context)
+			cc.RequestID = approval.RequestID
+			if approval.Pickup != "" {
+				cc.Pickup = approval.Pickup
+			}
+			if approval.Drop != "" {
+				cc.Drop = approval.Drop
+			}
+			convo.Context, _ = cc.Marshal()
+			_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
+				UserID:  row.UserID,
+				State:   convo.State,
+				Context: convo.Context,
+			})
+			if err != nil {
+				return fmt.Errorf("update conversation: %w", err)
+			}
+		}
+
+		// If denied, move the conversation back to idle.
+		if !approve {
+			convo, err := q.GetConversationForUpdate(ctx, row.UserID)
+			if err != nil {
+				return fmt.Errorf("load conversation: %w", err)
+			}
+			convo.State = string(StateIdle)
+			convo.Context, _ = (ConversationContext{}).Marshal()
+			_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
+				UserID:  row.UserID,
+				State:   convo.State,
+				Context: convo.Context,
+			})
+			if err != nil {
+				return fmt.Errorf("update conversation: %w", err)
+			}
 		}
 
 		// Audit.

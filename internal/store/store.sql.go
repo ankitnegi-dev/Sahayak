@@ -305,6 +305,32 @@ func (q *Queries) GetConversationForUpdate(ctx context.Context, userID pgtype.UU
 	return i, err
 }
 
+const getLatestApprovalByUser = `-- name: GetLatestApprovalByUser :one
+SELECT id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+FROM approvals
+WHERE user_id = $1
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestApprovalByUser(ctx context.Context, userID pgtype.UUID) (Approval, error) {
+	row := q.db.QueryRow(ctx, getLatestApprovalByUser, userID)
+	var i Approval
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChildID,
+		&i.OrderSnapshot,
+		&i.Reason,
+		&i.Status,
+		&i.ShortCode,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
 const getLimits = `-- name: GetLimits :one
 SELECT user_id, per_ride_cap_paise, daily_cap_paise, allowed_hours_start, allowed_hours_end, kill_switch, updated_at
 FROM limits

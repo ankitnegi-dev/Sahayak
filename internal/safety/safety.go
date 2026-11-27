@@ -126,34 +126,60 @@ func (c *Checker) Check(ctx context.Context, req conversation.SafetyRequest) con
 		return conversation.SafetyDecision{Type: conversation.SafetyDeny, Reason: "kill_switch"}
 	}
 
-	// b) Allowed hours (IST).
-	if !withinAllowedHours(now, limits.AllowedHoursStart, limits.AllowedHoursEnd) {
-		return conversation.SafetyDecision{Type: conversation.SafetyNeedsApproval, Reason: "outside_hours"}
+	// Helper: check if the approval is valid for a given reason.
+	approvalValid := func(reason string) bool {
+		if req.Approval == nil {
+			return false
+		}
+		if req.Approval.Status != "approved" {
+			return false
+		}
+		if req.Approval.ExpiresAt.Before(now) {
+			return false
+		}
+		// Snapshot must match.
+		if req.Approval.Pickup != req.Pickup || req.Approval.Drop != req.Drop || req.Approval.RequestID != req.RequestID {
+			return false
+		}
+		return true
 	}
 
-	// c) Per-ride cap (only if fare known).
+	// b) Allowed hours (IST).
+	if !withinAllowedHours(now, limits.AllowedHoursStart, limits.AllowedHoursEnd) {
+		if !approvalValid("outside_hours") {
+			return conversation.SafetyDecision{Type: conversation.SafetyNeedsApproval, Reason: "outside_hours"}
+		}
+	}
+
+	// c) Per-ride cap (only if fare known). Deny, never overridden.
 	if req.FarePaise > 0 && req.FarePaise > limits.PerRideCapPaise {
 		return conversation.SafetyDecision{Type: conversation.SafetyDeny, Reason: "per_ride_cap"}
 	}
 
-	// d) Daily cap.
+	// d) Daily cap. Deny, never overridden.
 	if req.FarePaise > 0 && todaySpend+req.FarePaise > limits.DailyCapPaise {
 		return conversation.SafetyDecision{Type: conversation.SafetyDeny, Reason: "daily_cap"}
 	}
 
 	// e) Daily booking count (covers unknown fares).
 	if todayBookings >= int64(c.config.MaxDailyBookings) {
-		return conversation.SafetyDecision{Type: conversation.SafetyNeedsApproval, Reason: "too_many_bookings"}
+		if !approvalValid("too_many_bookings") {
+			return conversation.SafetyDecision{Type: conversation.SafetyNeedsApproval, Reason: "too_many_bookings"}
+		}
 	}
 
 	// f) Unsaved destination.
 	if !isSaved {
-		return conversation.SafetyDecision{Type: conversation.SafetyNeedsApproval, Reason: "unknown_destination"}
+		if !approvalValid("unknown_destination") {
+			return conversation.SafetyDecision{Type: conversation.SafetyNeedsApproval, Reason: "unknown_destination"}
+		}
 	}
 
 	// g) Rapid repeats.
 	if recentAttempts >= int64(c.config.RapidBookingThreshold) {
-		return conversation.SafetyDecision{Type: conversation.SafetyNeedsApproval, Reason: "rapid_bookings"}
+		if !approvalValid("rapid_bookings") {
+			return conversation.SafetyDecision{Type: conversation.SafetyNeedsApproval, Reason: "rapid_bookings"}
+		}
 	}
 
 	return conversation.SafetyDecision{Type: conversation.SafetyAllow}

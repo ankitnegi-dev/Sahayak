@@ -179,6 +179,13 @@ FROM approvals
 WHERE child_id = $1 AND status = 'pending' AND expires_at > now()
 ORDER BY created_at DESC;
 
+-- name: GetLatestApprovalByUser :one
+SELECT id, user_id, child_id, order_snapshot, reason, status, short_code, created_at, expires_at, decided_at
+FROM approvals
+WHERE user_id = $1
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: CountProcessedMessages :one
 SELECT count(*)::bigint FROM processed_messages;
 -- name: GetConversationForUpdate :one

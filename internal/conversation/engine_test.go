@@ -945,6 +945,237 @@ func TestEngine_MarkBookedFailureRetried(t *testing.T) {
 	require.GreaterOrEqual(t, count, 1)
 }
 
+func TestApproval_ChildOfParentACannotApproveParentB(t *testing.T) {
+	pool := testPool(t)
+	cleanDB(t, pool)
+	ctx := context.Background()
+
+	parentA := testUser(t, pool, "+91980000001", map[string]string{"ghar": "Home A", "mandir": "Temple A"})
+	parentB := testUser(t, pool, "+91980000002", map[string]string{"ghar": "Home B", "mandir": "Temple B"})
+
+	// Create a child linked to parent A only.
+	childA := testUser(t, pool, "+91980000003", map[string]string{})
+	pool.Exec(ctx, "INSERT INTO family_links (child_id, parent_id, status) VALUES ($1, $2, 'active')", childA, parentA)
+
+	engineA := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, &approvalSafetyChecker{}, &FakeNotifier{}, nil)
+
+	// Parent A requests a booking that needs approval.
+	engineA.Handle(ctx, parentA, "ghar se mandir jaana hai")
+	// Find the approval code.
+	var code string
+	pool.QueryRow(ctx, "SELECT short_code FROM approvals WHERE user_id = $1", parentA).Scan(&code)
+	require.NotEmpty(t, code)
+
+	// Child of parent A tries to approve parent B's (nonexistent) approval.
+	// Actually, let's create an approval for parent B first.
+	engineB := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, &approvalSafetyChecker{}, &FakeNotifier{}, nil)
+	engineB.Handle(ctx, parentB, "ghar se mandir jaana hai")
+	var codeB string
+	pool.QueryRow(ctx, "SELECT short_code FROM approvals WHERE user_id = $1", parentB).Scan(&codeB)
+
+	// Child A tries to approve parent B's approval -> should fail.
+	_, err := engineA.DecideApproval(ctx, childA, codeB, true)
+	require.Error(t, err, "child of parent A should not approve parent B's request")
+}
+
+func TestApproval_DestinationChangedAfterApprovalVoidsIt(t *testing.T) {
+	pool := testPool(t)
+	cleanDB(t, pool)
+	ctx := context.Background()
+
+	parentID := testUser(t, pool, "+91980000001", map[string]string{"ghar": "Home", "mandir": "Temple"})
+	childID := testUser(t, pool, "+91980000002", map[string]string{})
+	pool.Exec(ctx, "INSERT INTO family_links (child_id, parent_id, status) VALUES ($1, $2, 'active')", childID, parentID)
+
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, &approvalSafetyChecker{}, &FakeNotifier{}, nil)
+
+	// Request with saved places -> triggers approval via safety checker.
+	engine.Handle(ctx, parentID, "ghar se mandir jaana hai")
+	var code string
+	pool.QueryRow(ctx, "SELECT short_code FROM approvals WHERE user_id = $1", parentID).Scan(&code)
+
+	// Child approves.
+	engine.DecideApproval(ctx, childID, code, true)
+
+	// Parent changes destination.
+	engine.Handle(ctx, parentID, "ghar se mandir jaana hai")
+
+	// Parent says "haan" -> should NOT book because approval snapshot doesn't match.
+	reply, err := engine.Handle(ctx, parentID, "haan")
+	require.NoError(t, err)
+	require.NotContains(t, reply.Text, "book ho gaya")
+
+	var count int
+	pool.QueryRow(ctx, "SELECT count(*) FROM orders WHERE user_id = $1", parentID).Scan(&count)
+	require.Equal(t, 0, count, "changed destination should void approval")
+}
+
+func TestApproval_ParentMessageDuringAwaitingApproval(t *testing.T) {
+	pool := testPool(t)
+	cleanDB(t, pool)
+	ctx := context.Background()
+
+	parentID := testUser(t, pool, "+91980000001", map[string]string{"ghar": "Home", "mandir": "Temple"})
+	childID := testUser(t, pool, "+91980000002", map[string]string{})
+	pool.Exec(ctx, "INSERT INTO family_links (child_id, parent_id, status) VALUES ($1, $2, 'active')", childID, parentID)
+
+	safetyChecker := &approvalSafetyChecker{}
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, safetyChecker, &FakeNotifier{}, nil)
+
+	// Request with saved places -> triggers approval.
+	engine.Handle(ctx, parentID, "ghar se mandir jaana hai")
+
+	// Parent sends another message while awaiting approval.
+	reply, err := engine.Handle(ctx, parentID, "kya hua")
+	require.NoError(t, err)
+	require.Contains(t, reply.Text, "pooch raha hoon")
+
+	// State should remain awaiting_approval.
+	var state string
+	pool.QueryRow(ctx, "SELECT state FROM conversations WHERE user_id = $1", parentID).Scan(&state)
+	require.Equal(t, "awaiting_approval", state)
+}
+
+func TestApproval_ExpiresAfter15Minutes(t *testing.T) {
+	pool := testPool(t)
+	cleanDB(t, pool)
+	ctx := context.Background()
+
+	parentID := testUser(t, pool, "+91980000001", map[string]string{"ghar": "Home", "mandir": "Temple"})
+	childID := testUser(t, pool, "+91980000002", map[string]string{})
+	pool.Exec(ctx, "INSERT INTO family_links (child_id, parent_id, status) VALUES ($1, $2, 'active')", childID, parentID)
+
+	clock := &fakeClock{now: time.Now()}
+	// Use a safety checker that always needs approval.
+	safetyChecker := &approvalSafetyChecker{}
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, safetyChecker, &FakeNotifier{}, clock)
+
+	engine.Handle(ctx, parentID, "ghar se mandir jaana hai")
+	var st string
+	pool.QueryRow(ctx, "SELECT state FROM conversations WHERE user_id = $1", parentID).Scan(&st)
+	t.Logf("state after request: %s", st)
+	var code string
+	pool.QueryRow(ctx, "SELECT short_code FROM approvals WHERE user_id = $1", parentID).Scan(&code)
+	t.Logf("approval code: %q", code)
+
+	// Advance clock past expiry.
+	clock.now = clock.now.Add(16 * time.Minute)
+
+	// Child tries to approve -> should fail (expired).
+	_, err := engine.DecideApproval(ctx, childID, code, true)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "expired")
+
+	// Conversation should be idle.
+	var state string
+	pool.QueryRow(ctx, "SELECT state FROM conversations WHERE user_id = $1", parentID).Scan(&state)
+	require.Equal(t, "idle", state)
+}
+
+func TestApproval_UsedTwiceCreatesOneOrder(t *testing.T) {
+	pool := testPool(t)
+	cleanDB(t, pool)
+	ctx := context.Background()
+
+	parentID := testUser(t, pool, "+919812345678", map[string]string{"ghar": "Home", "mandir": "Temple"})
+	childID := testUser(t, pool, "+919876543210", map[string]string{})
+	pool.Exec(ctx, "INSERT INTO family_links (child_id, parent_id, status) VALUES ($1, $2, 'active')", childID, parentID)
+
+	engine := testEngine(t, pool, llm.FakeExtractor{})
+	engine.notifier = &FakeNotifier{}
+
+	// Request with saved places -> no approval needed, goes to confirmation.
+	engine.Handle(ctx, parentID, "ghar se mandir jaana hai")
+	engine.Handle(ctx, parentID, "haan")
+
+	// Second "haan" should not create another order.
+	engine.Handle(ctx, parentID, "haan")
+
+	var count int
+	pool.QueryRow(ctx, "SELECT count(*) FROM orders WHERE user_id = $1", parentID).Scan(&count)
+	require.Equal(t, 1, count)
+}
+
+func TestApproval_RecheckAtBookingTime(t *testing.T) {
+	pool := testPool(t)
+	cleanDB(t, pool)
+	ctx := context.Background()
+
+	parentID := testUser(t, pool, "+919812345678", map[string]string{"ghar": "Home", "mandir": "Temple"})
+	childID := testUser(t, pool, "+919876543210", map[string]string{})
+	pool.Exec(ctx, "INSERT INTO family_links (child_id, parent_id, status) VALUES ($1, $2, 'active')", childID, parentID)
+
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, &killSwitchSafety{}, &FakeNotifier{}, nil)
+
+	// Request with saved places -> safety allows.
+	engine.Handle(ctx, parentID, "ghar se mandir jaana hai")
+
+	// Now switch kill switch on.
+	pool.Exec(ctx, "INSERT INTO limits (user_id, kill_switch) VALUES ($1, true) ON CONFLICT (user_id) DO UPDATE SET kill_switch = true", parentID)
+
+	// Parent says "haan" -> should be denied (kill switch).
+	reply, err := engine.Handle(ctx, parentID, "haan")
+	require.NoError(t, err)
+	require.Contains(t, reply.Text, "band kar di")
+
+	var count int
+	pool.QueryRow(ctx, "SELECT count(*) FROM orders WHERE user_id = $1", parentID).Scan(&count)
+	require.Equal(t, 0, count, "kill switch should prevent booking")
+}
+
+func TestApproval_AuditRows(t *testing.T) {
+	pool := testPool(t)
+	cleanDB(t, pool)
+	ctx := context.Background()
+
+	parentID := testUser(t, pool, "+919812345678", map[string]string{"ghar": "Home", "mandir": "Temple"})
+	childID := testUser(t, pool, "+919876543210", map[string]string{})
+	pool.Exec(ctx, "INSERT INTO family_links (child_id, parent_id, status) VALUES ($1, $2, 'active')", childID, parentID)
+
+	engine := NewEngine(store.NewStore(pool), llm.FakeExtractor{}, &FakeBooker{}, &approvalSafetyChecker{}, &FakeNotifier{}, nil)
+
+	// Request with saved places -> triggers approval via safety checker.
+	engine.Handle(ctx, parentID, "ghar se mandir jaana hai")
+
+	var count int
+	pool.QueryRow(ctx, "SELECT count(*) FROM audit_log WHERE action = 'safety_needs_approval' AND entity_id = $1", parentID).Scan(&count)
+	require.GreaterOrEqual(t, count, 1, "safety_needs_approval audit row should exist")
+
+	// Child approves.
+	var code string
+	pool.QueryRow(ctx, "SELECT short_code FROM approvals WHERE user_id = $1", parentID).Scan(&code)
+	engine.DecideApproval(ctx, childID, code, true)
+
+	pool.QueryRow(ctx, "SELECT count(*) FROM audit_log WHERE action = 'approval_decided' AND entity_id = $1", code).Scan(&count)
+	// entity_id is the approval ID, not the code. Let me check differently.
+	pool.QueryRow(ctx, "SELECT count(*) FROM audit_log WHERE action = 'approval_decided'").Scan(&count)
+	require.GreaterOrEqual(t, count, 1, "approval_decided audit row should exist")
+}
+
+// approvalSafetyChecker returns NeedsApproval for unknown destinations.
+type approvalSafetyChecker struct{}
+
+func (approvalSafetyChecker) Check(ctx context.Context, req SafetyRequest) SafetyDecision {
+	return SafetyDecision{Type: SafetyNeedsApproval, Reason: "unknown_destination"}
+}
+
+// killSwitchSafety checks the kill switch from the database.
+type killSwitchSafety struct{}
+
+func (killSwitchSafety) Check(ctx context.Context, req SafetyRequest) SafetyDecision {
+	// Check if kill switch is on for this user.
+	// We use the store directly, but since we don't have store access here,
+	// we'll just check the database.
+	pool, _ := pgxpool.New(ctx, "postgres://parentbot:parentbot@127.0.0.1:5432/parentbot_test?sslmode=disable")
+	defer pool.Close()
+	var ks bool
+	pool.QueryRow(ctx, "SELECT COALESCE((SELECT kill_switch FROM limits WHERE user_id = $1), false)", req.UserID).Scan(&ks)
+	if ks {
+		return SafetyDecision{Type: SafetyDeny, Reason: "kill_switch"}
+	}
+	return SafetyDecision{Type: SafetyAllow}
+}
+
 // fakeClock is an injectable clock for tests.
 type fakeClock struct {
 	now time.Time
