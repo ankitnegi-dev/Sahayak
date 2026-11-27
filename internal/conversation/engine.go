@@ -267,26 +267,41 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		// Handle confirm from awaiting_confirmation: this is the ONLY path
 		// that leads to booking. An explicit "haan" is required.
 		if state == StateAwaitingConfirmation && intent.Action == llm.ActionConfirm && replyText == "" {
-			// Safety check.
+			// Safety re-check at booking time.
 			decision := e.safety.Check(ctx, SafetyRequest{
 				UserID:       userID,
 				Pickup:       cc.Pickup,
 				Drop:         cc.Drop,
-				IsSavedPlace: false,
+				IsSavedPlace: cc.DropPlaceID != "",
 				FarePaise:    cc.FarePaise,
 				Now:          now,
 			})
 			switch decision.Type {
 			case SafetyDeny:
-				nextState = StateError
+				nextState = StateIdle
 				replyText = replies.RenderSafetyDeny(lang, decision.Reason)
 				cc.RequestID = ""
+				_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
+					Actor:      userID,
+					Action:     "safety_deny_at_booking",
+					EntityType: pgtypeText("conversation"),
+					EntityID:   pgtypeText(userID),
+					Details:    []byte(`{"reason":"` + decision.Reason + `"}`),
+				})
 			case SafetyNeedsApproval:
-				// Create approval, move to awaiting_approval.
-				nextState = StateAwaitingApproval
-				replyText = replies.RenderApprovalNeeded(lang)
-				// Store the reason in context for later.
-				cc.PendingAction = decision.Reason
+				// At booking time, NeedsApproval is treated as deny.
+				// The approval was already obtained; if conditions changed,
+				// the booking is denied.
+				nextState = StateIdle
+				replyText = replies.RenderSafetyDeny(lang, decision.Reason)
+				cc.RequestID = ""
+				_, _ = q.AppendAudit(ctx, store.AppendAuditParams{
+					Actor:      userID,
+					Action:     "safety_deny_at_booking",
+					EntityType: pgtypeText("conversation"),
+					EntityID:   pgtypeText(userID),
+					Details:    []byte(`{"reason":"` + decision.Reason + `"}`),
+				})
 			default:
 				// Allow: proceed to booking.
 				// Generate request ID if not already set.
