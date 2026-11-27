@@ -11,18 +11,18 @@ import (
 
 // Approval is a snapshot of a safety check that required child approval.
 type Approval struct {
-	ID           string
-	UserID       string
-	ChildID      string
-	Reason       string
-	Status       string
-	ShortCode    string
-	Pickup       string
-	Drop         string
-	RequestID    string
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-	DecidedAt    *time.Time
+	ID        string
+	UserID    string
+	ChildID   string
+	Reason    string
+	Status    string
+	ShortCode string
+	Pickup    string
+	Drop      string
+	RequestID string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	DecidedAt *time.Time
 }
 
 // DecideApproval processes an approval decision from a child.

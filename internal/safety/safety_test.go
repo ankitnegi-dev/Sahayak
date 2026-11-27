@@ -31,7 +31,8 @@ func cleanDB(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	for _, table := range []string{"orders", "approvals", "processed_messages", "conversations", "limits", "saved_places", "family_links", "users"} {
-		pool.Exec(ctx, "TRUNCATE TABLE "+table+" CASCADE")
+		_, err := pool.Exec(ctx, "TRUNCATE TABLE "+table+" CASCADE")
+		require.NoError(t, err)
 	}
 }
 
