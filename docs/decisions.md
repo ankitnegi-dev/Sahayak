@@ -726,3 +726,37 @@ was not implemented. This ADR documents the actual implementation.
 **Consequences:** No booking happens without passing both safety checks and
 the parent's explicit confirmation. The approval flow is testable with
 FakeNotifier and real Postgres.
+
+## ADR-040: Unsaved place acceptance and command-word guard
+
+**Status:** Accepted
+
+**Context:** The conversation engine must handle free-text addresses (not
+saved in the user's place list). The original code always asked for
+clarification, which made multi-turn free-text booking impossible. Also,
+command words like "haan" could be misinterpreted as place names when the
+LLM extracted them in a booking context.
+
+**Decision:**
+
+1. Looks-like-address heuristic: a string is accepted as an unsaved place
+   if it contains a digit or has 3+ words. Single short words require
+   clarification.
+
+2. Clarify-then-accept: after one failed clarification attempt, subsequent
+   short inputs are accepted as unsaved places. This lets the user correct
+   a vague name with a free-text address.
+
+3. Command-word guard: strings matching "haan", "yes", "nahi", "no",
+   "cancel", "help", "madad", "ok", "okay" are never stored as places.
+   They fall through to normal command handling.
+
+4. Three-attempt cap: after 3 failed clarifications, the conversation
+   resets to idle with a "bata deta" message.
+
+5. FakeExtractor treats a bare place name (no "se" pattern) as a pickup,
+   enabling single-word booking starts like "ghar" or "airport".
+
+6. Approval snapshot: DecideApproval parses the order snapshot before
+   updating conversation state, so the restored pickup/drop/request_id
+   are available when setting the awaiting_confirmation state.
