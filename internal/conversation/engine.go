@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/ankitnegi-dev/Sahayak/internal/conversation/replies"
@@ -190,6 +191,8 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 		}
 
 		// Resolve places from intent into context.
+		pickupFailed := false
+		dropFailed := false
 		if intent.Pickup != "" {
 			if p, err := ResolvePlace(intent.Pickup, places); err == nil {
 				if p.Address != "" {
@@ -198,37 +201,14 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 					cc.Pickup = p.Label
 				}
 				cc.PickupPlaceID = uuidToString(p.ID)
+			} else if isCommand(intent.Pickup) {
+				// Commands are never stored as places. Don't count, don't accept.
+			} else if looksLikeAddress(intent.Pickup) || (cc.ClarifyAttempts > 0 && len(strings.TrimSpace(intent.Pickup)) >= 3) {
+				// Accept as unsaved place.
+				cc.Pickup = intent.Pickup
+				cc.PickupPlaceID = ""
 			} else {
-				cc.ClarifyAttempts++
-				if cc.ClarifyAttempts >= 3 {
-					reply = Reply{Text: replies.RenderTooManyAttempts(lang)}
-					cc = ConversationContext{}
-					convo.State = string(StateIdle)
-					cc.LastPromptAt = now
-					return e.persist(ctx, q, userID, convo, cc, "clarification_exhausted", intent, StateIdle)
-				}
-				reply = Reply{Text: replies.RenderClarifyPlace(lang, intent.Pickup)}
-				convo.State = string(state)
-				cc.LastPromptAt = now
-				convo.Context, _ = cc.Marshal()
-				_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
-					UserID:  pgtypeUUID(userID),
-					State:   convo.State,
-					Context: convo.Context,
-				})
-				if err != nil {
-					return fmt.Errorf("conversation: persist: %w", err)
-				}
-				if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
-					Actor:      userID,
-					Action:     "clarify_place",
-					EntityType: pgtypeText("conversation"),
-					EntityID:   pgtypeText(userID),
-					Details:    []byte("{}"),
-				}); auditErr != nil {
-					return fmt.Errorf("append audit: %w", auditErr)
-				}
-				return nil
+				pickupFailed = true
 			}
 		}
 
@@ -240,43 +220,59 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 					cc.Drop = p.Label
 				}
 				cc.DropPlaceID = uuidToString(p.ID)
+			} else if isCommand(intent.Drop) {
+				// Commands are never stored as places. Don't count, don't accept.
+			} else if looksLikeAddress(intent.Drop) || (cc.ClarifyAttempts > 0 && len(strings.TrimSpace(intent.Drop)) >= 3) {
+				// Accept as unsaved place.
+				cc.Drop = intent.Drop
+				cc.DropPlaceID = ""
 			} else {
-				cc.ClarifyAttempts++
-				if cc.ClarifyAttempts >= 3 {
-					reply = Reply{Text: replies.RenderTooManyAttempts(lang)}
-					cc = ConversationContext{}
-					convo.State = string(StateIdle)
-					cc.LastPromptAt = now
-					return e.persist(ctx, q, userID, convo, cc, "clarification_exhausted", intent, StateIdle)
-				}
-				reply = Reply{Text: replies.RenderClarifyPlace(lang, intent.Drop)}
-				convo.State = string(state)
-				cc.LastPromptAt = now
-				convo.Context, _ = cc.Marshal()
-				_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
-					UserID:  pgtypeUUID(userID),
-					State:   convo.State,
-					Context: convo.Context,
-				})
-				if err != nil {
-					return fmt.Errorf("conversation: persist: %w", err)
-				}
-				if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
-					Actor:      userID,
-					Action:     "clarify_place",
-					EntityType: pgtypeText("conversation"),
-					EntityID:   pgtypeText(userID),
-					Details:    []byte("{}"),
-				}); auditErr != nil {
-					return fmt.Errorf("append audit: %w", auditErr)
-				}
-				return nil
+				dropFailed = true
 			}
 		}
 
-		// Reset clarify attempts on successful resolution.
-		if intent.Pickup != "" || intent.Drop != "" {
-			cc.ClarifyAttempts = 0
+		// Handle clarification if needed.
+		if pickupFailed || dropFailed {
+			cc.ClarifyAttempts++
+			if cc.ClarifyAttempts >= 3 {
+				reply = Reply{Text: replies.RenderTooManyAttempts(lang)}
+				cc = ConversationContext{}
+				convo.State = string(StateIdle)
+				cc.LastPromptAt = now
+				return e.persist(ctx, q, userID, convo, cc, "clarification_exhausted", intent, StateIdle)
+			}
+			// Ask about the first unresolved place.
+			if pickupFailed {
+				reply = Reply{Text: replies.RenderClarifyPlace(lang, intent.Pickup)}
+				convo.State = string(StateAwaitingPickup)
+			} else {
+				reply = Reply{Text: replies.RenderClarifyPlace(lang, intent.Drop)}
+				if cc.Pickup != "" {
+					convo.State = string(StateAwaitingDrop)
+				} else {
+					convo.State = string(StateAwaitingPickup)
+				}
+			}
+			cc.LastPromptAt = now
+			convo.Context, _ = cc.Marshal()
+			_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
+				UserID:  pgtypeUUID(userID),
+				State:   convo.State,
+				Context: convo.Context,
+			})
+			if err != nil {
+				return fmt.Errorf("conversation: persist: %w", err)
+			}
+			if _, auditErr := q.AppendAudit(ctx, store.AppendAuditParams{
+				Actor:      userID,
+				Action:     "clarify_place",
+				EntityType: pgtypeText("conversation"),
+				EntityID:   pgtypeText(userID),
+				Details:    []byte("{}"),
+			}); auditErr != nil {
+				return fmt.Errorf("append audit: %w", auditErr)
+			}
+			return nil
 		}
 
 		// Determine next state and reply.
@@ -296,6 +292,9 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 			// Look up the latest approval for this user.
 			var approval *Approval
 			row, err := q.GetLatestApprovalByUser(ctx, pgtypeUUID(userID))
+			if err != nil {
+				// No approval found.
+			}
 			if err == nil && row.Status == "approved" {
 				a := &Approval{
 					ID:        uuidToString(row.ID),
@@ -331,6 +330,7 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 				RequestID:    cc.RequestID,
 				Approval:     approval,
 			})
+
 			switch decision.Type {
 			case SafetyDeny:
 				nextState = StateIdle
@@ -563,11 +563,6 @@ func (e *Engine) Handle(ctx context.Context, userID string, text string) (Reply,
 					// Create approval row.
 					childID := ActiveFamilyChild(ctx, q, userID)
 					if childID == "" {
-						// Debug: log family links
-						links, _ := q.ListFamilyLinks(ctx, pgtypeUUID(userID))
-						for _, l := range links {
-							fmt.Printf("DEBUG: link child=%s parent=%s status=%s\n", uuidToString(l.ChildID), uuidToString(l.ParentID), l.Status)
-						}
 						nextState = StateError
 						replyText = replies.RenderSafetyDeny(lang, "no_approver")
 						cc.RequestID = ""
@@ -834,6 +829,35 @@ func (e *Engine) handleBookRideIntent(state State, intent llm.Intent, cc Convers
 	default:
 		return state, replies.RenderUnknown(lang)
 	}
+}
+
+// isCommand reports whether a string is a command word that should never be
+// stored as a place name.
+func isCommand(s string) bool {
+	s = strings.TrimSpace(strings.ToLower(s))
+	switch s {
+	case "haan", "yes", "nahi", "no", "cancel", "help", "madad", "ok", "okay":
+		return true
+	}
+	return false
+}
+
+// looksLikeAddress reports whether a string looks like an address rather than
+// a vague place name. Three or more words, or any digit, qualifies.
+func looksLikeAddress(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	// Contains a digit.
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	// Three or more words.
+	words := strings.Fields(s)
+	return len(words) >= 3
 }
 
 func isValidIntent(intent llm.Intent) bool {
