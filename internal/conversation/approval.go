@@ -33,12 +33,6 @@ func (e *Engine) DecideApproval(ctx context.Context, actorUserID, code string, a
 
 		row, err := q.GetApprovalByCode(ctx, code)
 		if err != nil {
-			// Debug: list all approvals
-			approvals, _ := q.ListPendingApprovalsForChild(ctx, pgtypeUUID(""))
-			fmt.Printf("DEBUG: looking for code %q, found %d approvals\n", code, len(approvals))
-			for _, a := range approvals {
-				fmt.Printf("  code=%q status=%s\n", a.ShortCode, a.Status)
-			}
 			return fmt.Errorf("approval not found: %w", err)
 		}
 
@@ -92,6 +86,21 @@ func (e *Engine) DecideApproval(ctx context.Context, actorUserID, code string, a
 			status = "approved"
 		}
 
+		// Parse snapshot BEFORE updating conversation state.
+		var snapshotPickup, snapshotDrop, snapshotRequestID string
+		var snapshot map[string]any
+		if err := json.Unmarshal(row.OrderSnapshot, &snapshot); err == nil {
+			if v, ok := snapshot["pickup"].(string); ok {
+				snapshotPickup = v
+			}
+			if v, ok := snapshot["drop"].(string); ok {
+				snapshotDrop = v
+			}
+			if v, ok := snapshot["request_id"].(string); ok {
+				snapshotRequestID = v
+			}
+		}
+
 		// Update approval status.
 		if err := q.UpdateApprovalStatus(ctx, store.UpdateApprovalStatusParams{
 			ID:     row.ID,
@@ -109,12 +118,12 @@ func (e *Engine) DecideApproval(ctx context.Context, actorUserID, code string, a
 			convo.State = string(StateAwaitingConfirmation)
 			// Update context with the snapshot data.
 			cc, _ := UnmarshalContext(convo.Context)
-			cc.RequestID = approval.RequestID
-			if approval.Pickup != "" {
-				cc.Pickup = approval.Pickup
+			cc.RequestID = snapshotRequestID
+			if snapshotPickup != "" {
+				cc.Pickup = snapshotPickup
 			}
-			if approval.Drop != "" {
-				cc.Drop = approval.Drop
+			if snapshotDrop != "" {
+				cc.Drop = snapshotDrop
 			}
 			convo.Context, _ = cc.Marshal()
 			_, err = q.UpsertConversation(ctx, store.UpsertConversationParams{
@@ -168,21 +177,13 @@ func (e *Engine) DecideApproval(ctx context.Context, actorUserID, code string, a
 			Reason:    row.Reason,
 			Status:    status,
 			ShortCode: row.ShortCode,
+			ExpiresAt: row.ExpiresAt.Time,
 		}
 
-		// Parse snapshot.
-		var snapshot map[string]any
-		if err := json.Unmarshal(row.OrderSnapshot, &snapshot); err == nil {
-			if v, ok := snapshot["pickup"].(string); ok {
-				approval.Pickup = v
-			}
-			if v, ok := snapshot["drop"].(string); ok {
-				approval.Drop = v
-			}
-			if v, ok := snapshot["request_id"].(string); ok {
-				approval.RequestID = v
-			}
-		}
+		// Set approval fields from parsed snapshot.
+		approval.Pickup = snapshotPickup
+		approval.Drop = snapshotDrop
+		approval.RequestID = snapshotRequestID
 
 		return nil
 	})
