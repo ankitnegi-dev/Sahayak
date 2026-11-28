@@ -212,7 +212,7 @@ var hindiTemplates = Templates{
 	Cancelled:           "Theek hai, cancel kar diya.",
 	Unknown:             "Samajh nahi aaya. Dobara boliye.",
 	Help:                "Main cab book kar sakta hoon. Boliye 'cab book karo' aur main madad karunga.",
-	ClarifyPlace:        "{place} kaunsa? Kripya address bataiye.",
+	ClarifyPlace:        "{place} kaunsa? Kripya poora address bataiye.",
 	TooManyAttempts:     "Main samajh nahi pa raha. Main aapke bete ko bata deta hoon.",
 	Timeout:             "Bahut der ho gayi. Dobara shuru karein.",
 	BookingFailed:       "Booking nahi ho payi. Kripya dobara try karein.",
