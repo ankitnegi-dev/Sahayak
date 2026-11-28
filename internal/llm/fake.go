@@ -70,7 +70,14 @@ func (FakeExtractor) Extract(_ context.Context, text string, convoContext string
 	// Place names alone might indicate a booking context.
 	if containsAny(text, "ghar", "mandir", "hospital", "office", "station", "airport", "market") {
 		intent := Intent{Action: ActionBookRide, Confidence: 0.9}
-		intent.Pickup, intent.Drop = extractPlaces(text)
+		p, d := extractPlaces(text)
+		if p == "" && d == "" {
+			// Single place name with no "se" pattern: treat as pickup.
+			intent.Pickup = text
+		} else {
+			intent.Pickup = p
+			intent.Drop = d
+		}
 		return intent, nil
 	}
 
